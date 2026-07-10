@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.DS_Store
+CLAUDE.md
+**/CLAUDE.md
+.omc/
+.claude/
+.entire/
+.impeccable/

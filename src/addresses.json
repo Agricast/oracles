@@ -1,0 +1,21 @@
+{
+  "_comment": "Placeholder addresses. AgriOracle is now an EIP-2535 diamond behind one permanent proxy address - `oracle` below is that diamond address (not a facet address), and it does not change across future facet upgrades. Fill these in at cutover with the diamond's address. `deployBlock` must be the diamond's CREATION block (the block the Diamond proxy itself was deployed, not a later facet-cut block) - it bounds reporter event-log queries in config.ts; a stale/too-high deployBlock makes those scans miss early events, a too-low one over-scans and slows startup.",
+  "31337": {
+    "chainId": 31337,
+    "network": "local",
+    "oracle": "0x368d65D10b0e7947A8EEe86EdC4b8CF9621ec496",
+    "deployBlock": 904
+  },
+  "11155111": {
+    "chainId": 11155111,
+    "network": "sepolia",
+    "oracle": "0x0000000000000000000000000000000000000000",
+    "deployBlock": 0
+  },
+  "production": {
+    "chainId": 0,
+    "network": "production",
+    "oracle": "0x0000000000000000000000000000000000000000",
+    "deployBlock": 0
+  }
+}
