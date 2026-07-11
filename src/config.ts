@@ -1,5 +1,5 @@
 import "dotenv/config";
-import type { Address } from "viem";
+import { createPublicClient, http, type Address } from "viem";
 import addressBookJson from "./addresses.json" with { type: "json" };
 
 type NetworkName = "local" | "sepolia" | "production";
@@ -42,6 +42,24 @@ function resolveOracleAddress(network: NetworkName, chainId: number): Address {
     );
   }
   return entry.oracle;
+}
+
+/**
+ * eth_getCode against the configured RPC - a reporter pointed at an address
+ * with no deployed bytecode (stale addresses.json fallback, wrong network,
+ * typo'd ORACLE_ADDRESS) should refuse to start rather than run every
+ * read/write blind against a dead contract. Called once from oracle.ts's
+ * getOracleClients() startup check.
+ */
+export async function assertOracleAddressHasCode(rpcUrl: string, oracleAddress: Address): Promise<void> {
+  const client = createPublicClient({ transport: http(rpcUrl) });
+  const code = await client.getCode({ address: oracleAddress });
+  if (!code || code === "0x") {
+    throw new Error(
+      `No contract bytecode found at oracle address ${oracleAddress} on RPC ${rpcUrl}. ` +
+        "Check ORACLE_ADDRESS / src/addresses.json and RPC_URL - refusing to start against an empty address.",
+    );
+  }
 }
 
 export interface ReporterConfig {

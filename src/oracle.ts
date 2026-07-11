@@ -8,7 +8,7 @@ import {
   type Address,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { loadConfig } from "./config.js";
+import { loadConfig, assertOracleAddressHasCode } from "./config.js";
 import AgriOracleAbi from "./abi/AgriOracle.json" with { type: "json" };
 import { AGRI_ORACLE_DOMAIN } from "./abi/domain.js";
 
@@ -39,7 +39,10 @@ let clients: {
 } | null = null;
 
 /**
- * Builds the viem clients and runs the abi-drift-guard startup check: the
+ * Builds the viem clients and runs two startup checks: first that the
+ * resolved oracle address actually has deployed bytecode on the configured
+ * RPC (assertOracleAddressHasCode - catches a stale/wrong address before
+ * anything reads or writes to it), then the abi-drift-guard check: the
  * locally computed EIP-712 domain separator must match what the deployed
  * contract reports via getDomainSeparator(). A mismatch means SIGNED_PRICE_TYPES
  * or AGRI_ORACLE_DOMAIN in this repo is stale relative to the contract - every
@@ -51,6 +54,7 @@ export async function getOracleClients() {
   if (clients) return clients;
 
   const config = loadConfig();
+  await assertOracleAddressHasCode(config.rpcUrl, config.oracleAddress);
   const account = privateKeyToAccount(config.privateKey);
 
   const publicClient = createPublicClient({

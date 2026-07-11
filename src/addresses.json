@@ -3,7 +3,7 @@
   "31337": {
     "chainId": 31337,
     "network": "local",
-    "oracle": "0x368d65D10b0e7947A8EEe86EdC4b8CF9621ec496",
+    "oracle": "0xef20B794c46dc405875435eF6764a251adA92D9e",
     "deployBlock": 904
   },
   "11155111": {
