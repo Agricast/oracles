@@ -21,6 +21,15 @@ const EXPECTED_REVERTS = [
   "window expired",
   "Stake below active threshold",
   "Not a registered reporter",
+  // Custom Oracle errors now decoded via ABI
+  "AlreadyReportedForQuestion",
+  "ReportingWindowClosed",
+  "ReportingAlreadyFailed",
+  "ReportingWindowExpiredCallSettle",
+  "AlreadyResolved",
+  "AlreadySettled",
+  "BelowActiveThreshold",
+  "NotARegisteredReporter",
 ];
 
 function isExpectedRevert(message: string): boolean {
@@ -288,11 +297,11 @@ async function submitReportForMarket(
     },
   });
 
-  try {
-    const hash = await traceSpan(
-      "reporter.submit_report",
-      () =>
-        walletClient.writeContract({
+  const hash = await traceSpan(
+    "reporter.submit_report",
+    async () => {
+      try {
+        return await walletClient.writeContract({
           address,
           abi: AgriOracleAbi,
           functionName: "submitReport",
@@ -309,10 +318,22 @@ async function submitReportForMarket(
           value: reportBond,
           chain: walletClient.chain,
           account,
-        } as never),
-      { productCode: market.productCode, questionId: market.questionId },
-    );
+        } as never);
+      } catch (err) {
+        const message = (err as Error).message ?? String(err);
+        if (isExpectedRevert(message)) {
+          console.log(`[reporter] skipped ${market.productCode} (${market.questionId}): ${message.split('\n')[0]}`);
+          return null; // Return null on expected revert to avoid traceSpan ERROR
+        }
+        throw err;
+      }
+    },
+    { productCode: market.productCode, questionId: market.questionId },
+  );
 
+  if (!hash) return; // skipped due to expected revert
+
+  try {
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") {
       console.warn(`[reporter] submitReport reverted for ${market.productCode} (${market.questionId}): ${hash}`);
@@ -322,23 +343,39 @@ async function submitReportForMarket(
     incrementReportsSubmitted(1, { productCode: market.productCode });
   } catch (err) {
     const message = (err as Error).message ?? String(err);
-    if (isExpectedRevert(message)) {
-      console.log(`[reporter] skipped ${market.productCode} (${market.questionId}): ${message.slice(0, 80)}`);
-    } else {
-      console.warn(`[reporter] submitReport failed for ${market.productCode} (${market.questionId}): ${message.slice(0, 200)}`);
-    }
+    console.warn(`[reporter] submitReport failed for ${market.productCode} (${market.questionId}): ${message.slice(0, 200)}`);
   }
 }
 
 let cycleRunning = false;
+let consecutiveRpcFailures = 0;
+const MAX_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+
+function getBackoffMs(): number {
+  if (consecutiveRpcFailures === 0) return 0;
+  return Math.min(1000 * Math.pow(2, consecutiveRpcFailures), MAX_BACKOFF_MS);
+}
+
+let lastCycleTime = 0;
 
 async function runCycle(): Promise<void> {
   if (cycleRunning) return;
+  
+  const now = Date.now();
+  const backoff = getBackoffMs();
+  if (now - lastCycleTime < backoff) {
+    return;
+  }
+  
   cycleRunning = true;
+  lastCycleTime = now;
   const startedAt = Date.now();
   try {
     await traceSpan("reporter.cycle", async () => {
       const clients = await getOracleClients();
+
+      // Quick health check to prevent hammering if RPC is down
+      await clients.publicClient.getBlockNumber();
 
       if (!(await ensureActive(clients))) return;
 
@@ -346,9 +383,16 @@ async function runCycle(): Promise<void> {
       for (const market of markets) {
         await submitReportForMarket(clients, market);
       }
+      
+      consecutiveRpcFailures = 0; // reset on success
     });
   } catch (err) {
-    console.error("[reporter] cycle error:", (err as Error).message);
+    const msg = (err as Error).message;
+    console.error("[reporter] cycle error:", msg);
+    if (msg.includes("Timeout") || msg.includes("fetch failed") || msg.includes("network")) {
+      consecutiveRpcFailures++;
+      console.log(`[reporter] consecutive RPC failures: ${consecutiveRpcFailures}. Next retry in ${getBackoffMs() / 1000}s`);
+    }
   } finally {
     recordCycleDuration(Date.now() - startedAt);
     cycleRunning = false;
