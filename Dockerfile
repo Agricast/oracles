@@ -15,7 +15,18 @@ RUN npm install --omit=dev
 # Install Chromium for the direct-MOC scraper (src/moc-scraper.ts). Bloats
 # this slim image (~400MB+) but the reporter must be able to scrape MOC
 # itself instead of depending on the backend's /public/price feed.
-RUN npx playwright install --with-deps chromium
+#
+# This RUN executes as root (needed for --with-deps = apt). Playwright's default
+# cache is per-user ($HOME/.cache/ms-playwright), so a plain install lands the
+# browser in root's home while the process runs as `reporter` below and looks in
+# /home/reporter/.cache - it never finds it, and every scrape silently falls
+# back to the backend feed. Pin the browser to a fixed shared path and make it
+# world-readable so the reporter user resolves it. PLAYWRIGHT_BROWSERS_PATH must
+# stay set at runtime too (ENV persists into the final stage) or the lookup path
+# diverges from the install path again.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install --with-deps chromium \
+  && chmod -R a+rx /ms-playwright
 
 COPY --from=build /app/dist ./dist
 

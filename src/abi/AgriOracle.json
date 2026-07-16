@@ -16,7 +16,12 @@
   {
     "type": "function",
     "name": "withdrawStake",
-    "inputs": [{ "name": "amount", "type": "uint256" }],
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -45,14 +50,38 @@
     "type": "function",
     "name": "submitReport",
     "inputs": [
-      { "name": "questionId", "type": "bytes32" },
-      { "name": "productCode", "type": "string" },
-      { "name": "priceMin", "type": "uint256" },
-      { "name": "priceMax", "type": "uint256" },
-      { "name": "sourceDate", "type": "uint256" },
-      { "name": "expiryTime", "type": "uint256" },
-      { "name": "nonce", "type": "uint256" },
-      { "name": "signature", "type": "bytes" }
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      },
+      {
+        "name": "productCode",
+        "type": "string"
+      },
+      {
+        "name": "priceMin",
+        "type": "uint256"
+      },
+      {
+        "name": "priceMax",
+        "type": "uint256"
+      },
+      {
+        "name": "sourceDate",
+        "type": "uint256"
+      },
+      {
+        "name": "expiryTime",
+        "type": "uint256"
+      },
+      {
+        "name": "nonce",
+        "type": "uint256"
+      },
+      {
+        "name": "signature",
+        "type": "bytes"
+      }
     ],
     "outputs": [],
     "stateMutability": "payable"
@@ -60,7 +89,12 @@
   {
     "type": "function",
     "name": "settleReports",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -68,8 +102,14 @@
     "type": "function",
     "name": "resolveBinaryMarket",
     "inputs": [
-      { "name": "questionId", "type": "bytes32" },
-      { "name": "productCode", "type": "string" }
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      },
+      {
+        "name": "productCode",
+        "type": "string"
+      }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
@@ -78,8 +118,14 @@
     "type": "function",
     "name": "resolveMultiBracketMarket",
     "inputs": [
-      { "name": "questionId", "type": "bytes32" },
-      { "name": "productCode", "type": "string" }
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      },
+      {
+        "name": "productCode",
+        "type": "string"
+      }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
@@ -87,7 +133,12 @@
   {
     "type": "function",
     "name": "disputeResolution",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
     "outputs": [],
     "stateMutability": "payable"
   },
@@ -95,9 +146,18 @@
     "type": "function",
     "name": "resolveDispute",
     "inputs": [
-      { "name": "questionId", "type": "bytes32" },
-      { "name": "upholdResolution", "type": "bool" },
-      { "name": "correctedPrice", "type": "uint256" }
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      },
+      {
+        "name": "upholdResolution",
+        "type": "bool"
+      },
+      {
+        "name": "correctedPrice",
+        "type": "uint256"
+      }
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
@@ -105,128 +165,295 @@
   {
     "type": "function",
     "name": "finalizeResolution",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
   {
     "type": "function",
     "name": "getReporterInfo",
-    "inputs": [{ "name": "addr", "type": "address" }],
+    "inputs": [
+      {
+        "name": "addr",
+        "type": "address"
+      }
+    ],
     "outputs": [
-      { "name": "registered", "type": "bool" },
-      { "name": "stake", "type": "uint256" },
-      { "name": "totalReports", "type": "uint256" },
-      { "name": "accurateReports", "type": "uint256" },
-      { "name": "slashedCount", "type": "uint256" }
+      {
+        "name": "registered",
+        "type": "bool"
+      },
+      {
+        "name": "stake",
+        "type": "uint256"
+      },
+      {
+        "name": "totalReports",
+        "type": "uint256"
+      },
+      {
+        "name": "accurateReports",
+        "type": "uint256"
+      },
+      {
+        "name": "slashedCount",
+        "type": "uint256"
+      }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "reporters",
-    "inputs": [{ "name": "", "type": "address" }],
+    "inputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
     "outputs": [
-      { "name": "registered", "type": "bool" },
-      { "name": "stake", "type": "uint256" },
-      { "name": "totalReports", "type": "uint256" },
-      { "name": "accurateReports", "type": "uint256" },
-      { "name": "slashedCount", "type": "uint256" }
+      {
+        "name": "registered",
+        "type": "bool"
+      },
+      {
+        "name": "stake",
+        "type": "uint256"
+      },
+      {
+        "name": "totalReports",
+        "type": "uint256"
+      },
+      {
+        "name": "accurateReports",
+        "type": "uint256"
+      },
+      {
+        "name": "slashedCount",
+        "type": "uint256"
+      }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "reporterNonce",
-    "inputs": [{ "name": "", "type": "address" }],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "inputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getQuestionReporters",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
-    "outputs": [{ "name": "", "type": "address[]" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address[]"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getReportingStatus",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
     "outputs": [
-      { "name": "openedAt", "type": "uint256" },
-      { "name": "closesAt", "type": "uint256" },
-      { "name": "reportCount", "type": "uint256" },
-      { "name": "settled", "type": "bool" },
-      { "name": "windowOpen", "type": "bool" }
+      {
+        "name": "openedAt",
+        "type": "uint256"
+      },
+      {
+        "name": "closesAt",
+        "type": "uint256"
+      },
+      {
+        "name": "reportCount",
+        "type": "uint256"
+      },
+      {
+        "name": "settled",
+        "type": "bool"
+      },
+      {
+        "name": "windowOpen",
+        "type": "bool"
+      }
     ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "aggregatedPrices",
-    "inputs": [{ "name": "", "type": "bytes32" }],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "inputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getActiveReporters",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "address[]" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address[]"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getDomainSeparator",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "bytes32" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getRequiredDisputeBond",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getUnbondRequestCount",
-    "inputs": [{ "name": "reporter", "type": "address" }],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "inputs": [
+      {
+        "name": "reporter",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getRewardPoolBalance",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "isResolved",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
-    "outputs": [{ "name": "", "type": "bool" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "isFinalized",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
-    "outputs": [{ "name": "", "type": "bool" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bool"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "getResolution",
-    "inputs": [{ "name": "questionId", "type": "bytes32" }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32"
+      }
+    ],
     "outputs": [
-      { "name": "_resolved", "type": "bool" },
-      { "name": "settlementPrice", "type": "uint256" },
-      { "name": "resolvedAt", "type": "uint256" },
-      { "name": "productCode", "type": "string" }
+      {
+        "name": "_resolved",
+        "type": "bool"
+      },
+      {
+        "name": "settlementPrice",
+        "type": "uint256"
+      },
+      {
+        "name": "resolvedAt",
+        "type": "uint256"
+      },
+      {
+        "name": "productCode",
+        "type": "string"
+      }
     ],
     "stateMutability": "view"
   },
@@ -234,113 +461,196 @@
     "type": "function",
     "name": "MIN_STAKE",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "ACTIVE_THRESHOLD",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "REGISTRATION_FEE",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "REPORT_BOND",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "SLASH_AMOUNT",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "REWARD_AMOUNT",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "DEVIATION_THRESHOLD_BPS",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "UNBOND_PERIOD",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "QUORUM_MIN_STAKE",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "QUORUM_MIN_REPORTERS",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "DISPUTE_BOND_MIN",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "DISPUTE_BOND_BPS",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "DISPUTE_REWARD",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "MAX_SOURCE_DATE_AGE",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "function",
     "name": "reportingWindow",
     "inputs": [],
-    "outputs": [{ "name": "", "type": "uint256" }],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ],
     "stateMutability": "view"
   },
   {
     "type": "event",
     "name": "ReporterRegistered",
     "inputs": [
-      { "name": "reporter", "type": "address", "indexed": true },
-      { "name": "stake", "type": "uint256", "indexed": false }
+      {
+        "name": "reporter",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "stake",
+        "type": "uint256",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
@@ -348,9 +658,21 @@
     "type": "event",
     "name": "ReportSubmitted",
     "inputs": [
-      { "name": "questionId", "type": "bytes32", "indexed": true },
-      { "name": "reporter", "type": "address", "indexed": true },
-      { "name": "avgPrice", "type": "uint256", "indexed": false }
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "reporter",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "avgPrice",
+        "type": "uint256",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
@@ -358,8 +680,16 @@
     "type": "event",
     "name": "ReportingWindowExtended",
     "inputs": [
-      { "name": "questionId", "type": "bytes32", "indexed": true },
-      { "name": "newCloseAt", "type": "uint256", "indexed": false }
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "newCloseAt",
+        "type": "uint256",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
@@ -367,9 +697,21 @@
     "type": "event",
     "name": "ReportingFailed",
     "inputs": [
-      { "name": "questionId", "type": "bytes32", "indexed": true },
-      { "name": "totalWeight", "type": "uint256", "indexed": false },
-      { "name": "reporterCount", "type": "uint256", "indexed": false }
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "totalWeight",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "reporterCount",
+        "type": "uint256",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
@@ -377,9 +719,21 @@
     "type": "event",
     "name": "MedianComputed",
     "inputs": [
-      { "name": "questionId", "type": "bytes32", "indexed": true },
-      { "name": "medianPrice", "type": "uint256", "indexed": false },
-      { "name": "reportCount", "type": "uint256", "indexed": false }
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "medianPrice",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "reportCount",
+        "type": "uint256",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
@@ -387,9 +741,21 @@
     "type": "event",
     "name": "ReporterSlashed",
     "inputs": [
-      { "name": "reporter", "type": "address", "indexed": true },
-      { "name": "questionId", "type": "bytes32", "indexed": true },
-      { "name": "amount", "type": "uint256", "indexed": false }
+      {
+        "name": "reporter",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
@@ -397,9 +763,21 @@
     "type": "event",
     "name": "ReporterRewarded",
     "inputs": [
-      { "name": "reporter", "type": "address", "indexed": true },
-      { "name": "questionId", "type": "bytes32", "indexed": true },
-      { "name": "amount", "type": "uint256", "indexed": false }
+      {
+        "name": "reporter",
+        "type": "address",
+        "indexed": true
+      },
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
@@ -407,17 +785,304 @@
     "type": "event",
     "name": "MarketResolved",
     "inputs": [
-      { "name": "questionId", "type": "bytes32", "indexed": true },
-      { "name": "productCode", "type": "string", "indexed": false },
-      { "name": "settlementPrice", "type": "uint256", "indexed": false },
-      { "name": "payouts", "type": "uint256[]", "indexed": false }
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      },
+      {
+        "name": "productCode",
+        "type": "string",
+        "indexed": false
+      },
+      {
+        "name": "settlementPrice",
+        "type": "uint256",
+        "indexed": false
+      },
+      {
+        "name": "payouts",
+        "type": "uint256[]",
+        "indexed": false
+      }
     ],
     "anonymous": false
   },
   {
     "type": "event",
     "name": "ResolutionFinalized",
-    "inputs": [{ "name": "questionId", "type": "bytes32", "indexed": true }],
+    "inputs": [
+      {
+        "name": "questionId",
+        "type": "bytes32",
+        "indexed": true
+      }
+    ],
     "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "InvalidCTFAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InsufficientRegistrationStake",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MustSendETH",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InsufficientStake",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BelowMinStake",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnsettledReportsPending",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NothingClaimable",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ETHTransferFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotARegisteredReporter",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "BelowActiveThreshold",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IncorrectReportBond",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyResolved",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReportingWindowClosed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReportingAlreadyFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyReportedForQuestion",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidPrices",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SignatureExpired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SourceDateInFuture",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "SourceDateTooOld",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "StaleNonce",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReportingWindowExpiredCallSettle",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidSignature",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NoReportsSubmitted",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadySettled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "QuorumNotMetReportingFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReportingWindowStillOpen",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NothingToClaim",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotAuthorizedToRegister",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MarketAlreadyRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ThresholdMustBePositive",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ExceedsMaxMarketNotional",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NeedBrackets",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "MarketNotRegistered",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotABinaryMarket",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ReportsNotSettledYet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotAMultiBracketMarket",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotResolvedYet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyFinalized",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DisputeAlreadyOpen",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DisputePeriodHasEnded",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "UnauthorizedDisputer",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IncorrectDisputeBond",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ResolutionIsDisputed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "DisputePeriodNotEnded",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotDisputed",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CorrectedPriceRequired",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CannotEmergencyResolve",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "AlreadyCancelled",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CannotCancelAlreadyResolved",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidOutcomeCount",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ConditionNotPreparedWithThisN",
+    "inputs": []
   }
 ]
