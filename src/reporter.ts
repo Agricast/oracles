@@ -1,4 +1,4 @@
-import { formatEther, parseEther } from "viem";
+import { formatEther, parseEther, BaseError, ContractFunctionRevertedError } from "viem";
 import { getOracleClients, AgriOracleAbi } from "./oracle.js";
 import { loadConfig } from "./config.js";
 import { fetchScaledPrice, ImplausiblePriceError, StalePriceError } from "./price-source.js";
@@ -10,30 +10,69 @@ import { traceSpan, recordCycleDuration, incrementReportsSubmitted } from "./ote
 // AUTO_ENROLL registers - leaves room for the registerReporter gas cost itself.
 const AUTO_ENROLL_GAS_BUFFER = parseEther("0.01");
 
-// Substrings of revert reasons that mean "nothing to do here", not "the
-// reporter is broken" - logged at info level and skipped rather than
-// treated as an error worth waking someone up over.
-const EXPECTED_REVERTS = [
+// Revert reasons that mean "nothing to do here for this market" - safe to
+// skip silently at info level.
+const ROUTINE_SKIP_REVERTS = new Set([
   "Already reported",
   "Already resolved",
   "Reporting window closed",
-  "Reporting failed",
   "window expired",
-  "Stake below active threshold",
-  "Not a registered reporter",
-  // Custom Oracle errors now decoded via ABI
   "AlreadyReportedForQuestion",
   "ReportingWindowClosed",
-  "ReportingAlreadyFailed",
   "ReportingWindowExpiredCallSettle",
   "AlreadyResolved",
   "AlreadySettled",
+]);
+
+// These look like routine skips but actually mean the reporter's own
+// identity or stake is the problem (or a market failed quorum) - worth an
+// alertable log, not a silent info-level skip. Left at the old, broad
+// substring-matching level, a reporter that fell below ACTIVE_THRESHOLD or
+// got deregistered would "skip" every market forever with nothing but info
+// lines to show for it - going dark while looking routine.
+const IDENTITY_STAKE_REVERTS = new Set([
+  "Stake below active threshold",
+  "Not a registered reporter",
+  "Reporting failed",
   "BelowActiveThreshold",
   "NotARegisteredReporter",
-];
+  "ReportingAlreadyFailed",
+  "QuorumNotMetReportingFailed",
+]);
 
-function isExpectedRevert(message: string): boolean {
-  return EXPECTED_REVERTS.some((needle) => message.includes(needle));
+/**
+ * Pulls the decoded custom-error name off a viem contract call error, when
+ * the revert data could be decoded against AgriOracleAbi - an exact selector
+ * match instead of guessing from stringified message text.
+ */
+function decodedRevertName(err: unknown): string | undefined {
+  if (!(err instanceof BaseError)) return undefined;
+  const revertError = err.walk((e) => e instanceof ContractFunctionRevertedError);
+  return revertError instanceof ContractFunctionRevertedError ? revertError.data?.errorName : undefined;
+}
+
+/**
+ * Classifies a submitReport revert. Prefers the decoded custom-error name
+ * (exact match against the ABI's error set) and only falls back to
+ * substring-matching the message for the handful of require(string) reasons
+ * the contract still emits - narrowed to those known literal reasons, not an
+ * open-ended "does this text appear anywhere" check that could swallow an
+ * unrelated error.
+ */
+function classifyRevert(err: unknown, message: string): "routine" | "identity" | "unknown" {
+  const decoded = decodedRevertName(err);
+  if (decoded) {
+    if (ROUTINE_SKIP_REVERTS.has(decoded)) return "routine";
+    if (IDENTITY_STAKE_REVERTS.has(decoded)) return "identity";
+    return "unknown";
+  }
+  for (const reason of ROUTINE_SKIP_REVERTS) {
+    if (message.includes(reason)) return "routine";
+  }
+  for (const reason of IDENTITY_STAKE_REVERTS) {
+    if (message.includes(reason)) return "identity";
+  }
+  return "unknown";
 }
 
 async function hasAlreadyReported(
@@ -49,6 +88,14 @@ async function hasAlreadyReported(
   const me = clients.account.address.toLowerCase();
   return reporters.some((r) => r.toLowerCase() === me);
 }
+
+// Unlike ensureEnrolled's one-shot registration, ensureActive re-checks
+// stake every poll cycle - so a failed/skipped top-up (insufficient
+// balance, a reverted tx) would otherwise retry immediately next cycle
+// forever, spamming identical warnings and a doomed addStake gas estimate
+// every pollIntervalMs. Rate-limit repeat attempts instead.
+const TOPUP_ATTEMPT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+let lastTopupAttemptAt = 0;
 
 /**
  * Reads registration + stake, and (only when AUTO_TOPUP=true) tops the stake
@@ -96,6 +143,21 @@ async function ensureActive(clients: Awaited<ReturnType<typeof getOracleClients>
   })) as bigint;
   const topUpAmount = minStake > stake ? minStake - stake : 0n;
   if (topUpAmount === 0n) return true;
+
+  const now = Date.now();
+  if (now - lastTopupAttemptAt < TOPUP_ATTEMPT_COOLDOWN_MS) {
+    return false;
+  }
+  lastTopupAttemptAt = now;
+
+  const balance = await publicClient.getBalance({ address: account.address });
+  if (balance < topUpAmount) {
+    console.warn(
+      `[reporter] AUTO_TOPUP: need ${formatEther(topUpAmount)} ETH to reach MIN_STAKE but wallet only has ` +
+        `${formatEther(balance)} ETH - skipping until funded (will retry in ${TOPUP_ATTEMPT_COOLDOWN_MS / 60_000}min)`,
+    );
+    return false;
+  }
 
   console.log(`[reporter] AUTO_TOPUP: stake fell to ${stake} wei, adding ${topUpAmount} wei`);
   const hash = await walletClient.writeContract({
@@ -321,9 +383,17 @@ async function submitReportForMarket(
         } as never);
       } catch (err) {
         const message = (err as Error).message ?? String(err);
-        if (isExpectedRevert(message)) {
+        const classification = classifyRevert(err, message);
+        if (classification === "routine") {
           console.log(`[reporter] skipped ${market.productCode} (${market.questionId}): ${message.split('\n')[0]}`);
           return null; // Return null on expected revert to avoid traceSpan ERROR
+        }
+        if (classification === "identity") {
+          console.error(
+            `[reporter] ALERT: ${market.productCode} (${market.questionId}) reverted with an identity/stake ` +
+              `condition - this reporter may be under-stake, deregistered, or its markets are failing quorum: ${message.split('\n')[0]}`,
+          );
+          return null; // still skip this market, but loudly rather than as a routine info line
         }
         throw err;
       }
@@ -346,6 +416,16 @@ async function submitReportForMarket(
     console.warn(`[reporter] submitReport failed for ${market.productCode} (${market.questionId}): ${message.slice(0, 200)}`);
   }
 }
+
+// Cycle errors that are known to be permanent, not RPC/network hiccups,
+// where backing off would just delay picking up an externally-applied fix -
+// the reporter is expected to recover on its own next tick once whatever
+// caused it is resolved. Empty for now: every failure mode this reporter has
+// actually hit (RPC timeouts, markets-feed outages, ABI/config drift at
+// getOracleClients()) benefits from backing off rather than hammering a
+// broken dependency every poll interval. Add an entry here only for a
+// verified, specific case - not a guess.
+const NON_TRANSIENT_SKIP_BACKOFF: readonly string[] = [];
 
 let cycleRunning = false;
 let consecutiveRpcFailures = 0;
@@ -389,9 +469,15 @@ async function runCycle(): Promise<void> {
   } catch (err) {
     const msg = (err as Error).message;
     console.error("[reporter] cycle error:", msg);
-    if (msg.includes("Timeout") || msg.includes("fetch failed") || msg.includes("network")) {
+    // Back off on any cycle error by default - only the explicit allowlist
+    // above skips it. The old allowlist-to-back-off (Timeout/fetch failed/
+    // network substrings only) meant any other failure mode - a bug, a
+    // config problem, an RPC error message that just didn't match those
+    // three words - hot-looped at the full poll interval forever instead of
+    // backing off.
+    if (!NON_TRANSIENT_SKIP_BACKOFF.some((needle) => msg.includes(needle))) {
       consecutiveRpcFailures++;
-      console.log(`[reporter] consecutive RPC failures: ${consecutiveRpcFailures}. Next retry in ${getBackoffMs() / 1000}s`);
+      console.log(`[reporter] consecutive cycle failures: ${consecutiveRpcFailures}. Next retry in ${getBackoffMs() / 1000}s`);
     }
   } finally {
     recordCycleDuration(Date.now() - startedAt);

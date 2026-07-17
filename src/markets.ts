@@ -1,4 +1,7 @@
 import { loadConfig } from "./config.js";
+import { isValidProductCode } from "./product-code.js";
+
+const QUESTION_ID_RE = /^0x[0-9a-fA-F]{64}$/;
 
 /**
  * Expected shape of MARKETS_API_URL's response - a public, read-only feed
@@ -79,6 +82,13 @@ export async function discoverReportableMarkets(): Promise<ReportableMarket[]> {
   const now = Date.now();
   return markets.filter((m) => {
     if (!m.questionId || !m.productCode || !m.resolutionTime) return false;
+    // MARKETS_API_URL is an external, untrusted feed - questionId and
+    // productCode both flow on into on-chain calls and (for productCode)
+    // into moc-scraper.ts's request URL and temp file path. Reject anything
+    // that doesn't already look like the shape the rest of the pipeline
+    // assumes, rather than letting a malformed entry reach either.
+    if (!QUESTION_ID_RE.test(m.questionId)) return false;
+    if (!isValidProductCode(m.productCode)) return false;
     const resolutionMs = new Date(m.resolutionTime).getTime();
     return !Number.isNaN(resolutionMs) && resolutionMs <= now;
   });

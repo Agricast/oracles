@@ -1,5 +1,6 @@
 import { loadConfig } from "./config.js";
 import { scrapeMocProduct } from "./moc-scraper.js";
+import { MAX_PLAUSIBLE_PRICE } from "./price-plausibility.js";
 
 /**
  * Expected shape of a price quote, whether scraped directly from MOC
@@ -82,11 +83,10 @@ async function fetchFromMoc(productCode: string): Promise<PriceQuote> {
  * (data.moc.go.th) and the backend feed is itself MOC-derived - so a
  * malformed CSV row, a MITM'd response, or a compromised MOC endpoint
  * must not be able to push an arbitrary value through to an on-chain,
- * bonded-reporter-signed submission. Product prices are THB/kg-scale;
- * anything outside this band is rejected rather than silently trusted.
+ * bonded-reporter-signed submission. Shares its bounds with moc-scraper.ts
+ * (src/price-plausibility.ts) so a CSV row can be filtered with the same
+ * rule before it ever reaches here.
  */
-const MAX_PLAUSIBLE_PRICE = 1_000_000; // THB/kg - generous upper bound, still far below overflow/garbage territory
-
 function assertPlausiblePrice(quote: PriceQuote): void {
   const { priceMin, priceMax, productCode } = quote;
   if (!Number.isFinite(priceMin) || !Number.isFinite(priceMax)) {
