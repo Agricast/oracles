@@ -12,6 +12,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { chromium } from "playwright";
 import { loadConfig } from "./config.js";
+import { isPlausiblePrice } from "./price-plausibility.js";
+import { PRODUCT_CODE_RE, isValidProductCode } from "./product-code.js";
 
 const MIN_RECORDS_EXPECTED = 0; // any record is usable; staleness is checked by the caller
 
@@ -24,23 +26,20 @@ const USER_AGENTS = [
 const randomUserAgent = () =>
   USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)] as string;
 
+// UTC getters, not local - callers pass UTC-constructed dates (Date.UTC(...)
+// below), and reading them back with local getters shifts the calendar day
+// by +-1 whenever the process's TZ isn't UTC.
 const formatDate = (d: Date): string => {
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
+  const year = d.getUTCFullYear();
+  const month = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// productCode comes from MARKETS_API_URL (an external, untrusted feed - see
-// price-source.ts) and is interpolated into both a request URL and a temp
-// file path. Reject anything outside a plain alphanumeric/-/_ token before
-// it reaches either, closing off query injection and path traversal.
-const PRODUCT_CODE_RE = /^[A-Za-z0-9_-]{1,32}$/;
-
 function assertValidProductCode(productCode: string): void {
-  if (!PRODUCT_CODE_RE.test(productCode)) {
+  if (!isValidProductCode(productCode)) {
     throw new Error(`Invalid productCode "${productCode}": must match ${PRODUCT_CODE_RE}`);
   }
 }
@@ -142,8 +141,17 @@ function parseDownloadedCsv(content: string): MocPriceRecord[] {
       continue;
     }
 
+    // MOC's CSV export sometimes dates rows in the Buddhist Era calendar
+    // (BE = CE + 543) instead of Gregorian - e.g. 2569 instead of 2026. Left
+    // uncorrected, Date.UTC(2569, ...) lands 543 years in the future, which
+    // then wins every "latest" comparison below and poisons the market with
+    // that row forever (no future scrape can outrank a date that far out).
+    // No real Gregorian year is anywhere near this range, so the threshold
+    // is unambiguous.
+    const gregorianYear = year > 2200 ? year - 543 : year;
+
     records.push({
-      date: formatDate(new Date(Date.UTC(year, month - 1, day))),
+      date: formatDate(new Date(Date.UTC(gregorianYear, month - 1, day))),
       priceMax,
       priceMin,
     });
@@ -227,7 +235,17 @@ async function scrapeOnce(productCode: string): Promise<MocQuote> {
           throw new Error(`MOC CSV for ${productCode} had no parseable rows`);
         }
 
-        const latest = records.reduce((a, b) => (a.date > b.date ? a : b));
+        // Pick the newest row whose price is plausible, not just the newest
+        // row - date and price are parsed independently, so a single
+        // NaN/blank/garbage price on the most recent date would otherwise
+        // win the pick and poison the whole market with no fallback (the
+        // caller only falls back to the backend feed on scrape *failure*,
+        // not on a quietly-bad value that still parses).
+        const plausibleRecords = records.filter((r) => isPlausiblePrice(r.priceMin, r.priceMax));
+        if (plausibleRecords.length === 0) {
+          throw new Error(`MOC CSV for ${productCode} had no rows with a plausible price`);
+        }
+        const latest = plausibleRecords.reduce((a, b) => (a.date > b.date ? a : b));
         return {
           productCode,
           priceMin: latest.priceMin,

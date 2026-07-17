@@ -350,6 +350,18 @@
   },
   {
     "type": "function",
+    "name": "PRICE_TYPEHASH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getRequiredDisputeBond",
     "inputs": [
       {

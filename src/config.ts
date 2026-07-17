@@ -1,5 +1,5 @@
 import "dotenv/config";
-import { createPublicClient, http, type Address } from "viem";
+import { createPublicClient, http, parseEther, type Address } from "viem";
 import addressBookJson from "./addresses.json" with { type: "json" };
 
 type NetworkName = "local" | "sepolia" | "production";
@@ -24,6 +24,41 @@ function requireEnv(name: string): string {
 function parseBool(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined) return fallback;
   return value.toLowerCase() === "true" || value === "1";
+}
+
+/**
+ * Parses a numeric env var, falling back to `fallback` when unset. Throws
+ * on anything that isn't a positive finite number - `Number(x)` silently
+ * returns NaN for garbage input (e.g. STALE_PRICE_HOURS=off), and a NaN
+ * threshold/interval doesn't fail loudly: it disables staleness checks
+ * (every comparison against NaN is false) or hot-loops setInterval at 0ms.
+ * Fail fast at startup instead.
+ */
+function numEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${name} must be a positive number, got "${raw}"`);
+  }
+  return parsed;
+}
+
+/**
+ * AUTO_ENROLL_STAKE isn't Number()-parsed - it's a decimal ETH string fed to
+ * viem's parseEther() (see reporter.ts ensureEnrolled). Left unvalidated, a
+ * malformed value only throws later, mid-startup, when auto-enroll actually
+ * runs. Validate it here instead so a bad .env value fails at loadConfig()
+ * like every other setting.
+ */
+function validateEtherAmount(name: string, value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    parseEther(value);
+  } catch {
+    throw new Error(`${name} must be a valid ether amount (e.g. "0.5"), got "${value}"`);
+  }
+  return value;
 }
 
 function resolveOracleAddress(network: NetworkName, chainId: number): Address {
@@ -117,26 +152,26 @@ export function loadConfig(): ReporterConfig {
     oracleAddress,
     priceSourceUrl: process.env.PRICE_SOURCE_URL ?? "",
     marketsApiUrl: process.env.MARKETS_API_URL ?? "",
-    pollIntervalMs: Number(process.env.POLL_INTERVAL_MS ?? 30_000),
+    pollIntervalMs: numEnv("POLL_INTERVAL_MS", 30_000),
     // MOC (Thai Ministry of Commerce) price rows are dated midnight-UTC and MOC
     // publishes with a lag - fresh data can already read ~15h old by evening
     // Bangkok time, and normal publish lag reaches ~2 days. A 12h default caused
     // false "skipping ... older than STALE_PRICE_HOURS" skips, so the fallback
     // is 48h here. Still fully overridable via STALE_PRICE_HOURS.
-    staleThresholdMs: Number(process.env.STALE_PRICE_HOURS ?? 48) * 3600 * 1000,
+    staleThresholdMs: numEnv("STALE_PRICE_HOURS", 48) * 3600 * 1000,
     autoTopup: parseBool(process.env.AUTO_TOPUP, false),
     // Public-safety default is manual (`cli register`) - AUTO_ENROLL opts a node into
     // self-registering on startup, for demo/docker-compose environments only.
     autoEnroll: parseBool(process.env.AUTO_ENROLL, false),
-    autoEnrollStake: process.env.AUTO_ENROLL_STAKE || undefined,
+    autoEnrollStake: validateEtherAmount("AUTO_ENROLL_STAKE", process.env.AUTO_ENROLL_STAKE || undefined),
     // Direct-MOC scrape is the primary price source (see src/moc-scraper.ts);
     // PRICE_SOURCE_URL (the backend feed) is the fallback if it errors/times
     // out. Set MOC_ENABLED=false to skip straight to the backend feed (e.g.
     // if MOC is blocking the reporter's IP).
     mocEnabled: parseBool(process.env.MOC_ENABLED, true),
     mocBaseUrl: process.env.MOC_BASE_URL ?? "https://data.moc.go.th/OpenData/GISProductPrice",
-    mocRequestTimeoutMs: Number(process.env.MOC_REQUEST_TIMEOUT_MS ?? 90_000),
-    mocScrapeAttempts: Number(process.env.MOC_SCRAPE_ATTEMPTS ?? 3),
+    mocRequestTimeoutMs: numEnv("MOC_REQUEST_TIMEOUT_MS", 90_000),
+    mocScrapeAttempts: numEnv("MOC_SCRAPE_ATTEMPTS", 3),
   };
   return cached;
 }

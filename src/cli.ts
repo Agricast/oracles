@@ -23,13 +23,13 @@ async function confirm(message: string): Promise<boolean> {
   return answer.trim().toLowerCase() === "y";
 }
 
-async function readUint(fn: string, questionId?: `0x${string}`): Promise<bigint> {
+async function readUint(fn: string, arg?: `0x${string}`): Promise<bigint> {
   const { publicClient, config } = await getOracleClients();
   return (await publicClient.readContract({
     address: config.oracleAddress,
     abi: AgriOracleAbi,
     functionName: fn,
-    args: questionId ? [questionId] : [],
+    args: arg ? [arg] : [],
   })) as bigint;
 }
 
@@ -120,7 +120,7 @@ async function cmdStatus(): Promise<void> {
     args: [account.address],
   })) as [boolean, bigint, bigint, bigint, bigint];
 
-  const nonce = await readUint("reporterNonce");
+  const nonce = await readUint("reporterNonce", account.address);
   const unbondCount = (await publicClient.readContract({
     address: config.oracleAddress,
     abi: AgriOracleAbi,
