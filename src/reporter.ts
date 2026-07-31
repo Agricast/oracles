@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { fetchScaledPrice, ImplausiblePriceError, StalePriceError } from "./price-source.js";
 import { discoverReportableMarkets, type ReportableMarket } from "./markets.js";
 import { SIGNED_PRICE_TYPES, AGRI_ORACLE_DOMAIN } from "./abi/domain.js";
+import { refreshStalenessBound, describeStalenessBound, type StalenessBound } from "./staleness.js";
 import { traceSpan, recordCycleDuration, incrementReportsSubmitted } from "./otel-init.js";
 
 // On top of stake + registration fee, require this much extra balance before
@@ -40,6 +41,16 @@ const IDENTITY_STAKE_REVERTS = new Set([
   "QuorumNotMetReportingFailed",
 ]);
 
+// The chain rejected the report's sourceDate outright. Distinct from a routine
+// skip because it means the node's view of the staleness window and the
+// contract's have diverged - the node believed the price was inside the bound
+// and paid gas to find out otherwise. Before the staleness change these were
+// unreachable (the node's own 48h always refused first), which is why they were
+// in neither set and fell through to "unknown" - aborting the whole cycle,
+// skipping every remaining market, and incrementing RPC backoff, so a
+// disagreement about dates read in the logs as an RPC outage.
+const SOURCE_DATE_REVERTS = new Set(["SourceDateTooOld", "SourceDateInFuture"]);
+
 /**
  * Pulls the decoded custom-error name off a viem contract call error, when
  * the revert data could be decoded against AgriOracleAbi - an exact selector
@@ -59,11 +70,12 @@ function decodedRevertName(err: unknown): string | undefined {
  * open-ended "does this text appear anywhere" check that could swallow an
  * unrelated error.
  */
-function classifyRevert(err: unknown, message: string): "routine" | "identity" | "unknown" {
+function classifyRevert(err: unknown, message: string): "routine" | "identity" | "source-date" | "unknown" {
   const decoded = decodedRevertName(err);
   if (decoded) {
     if (ROUTINE_SKIP_REVERTS.has(decoded)) return "routine";
     if (IDENTITY_STAKE_REVERTS.has(decoded)) return "identity";
+    if (SOURCE_DATE_REVERTS.has(decoded)) return "source-date";
     return "unknown";
   }
   for (const reason of ROUTINE_SKIP_REVERTS) {
@@ -71,6 +83,9 @@ function classifyRevert(err: unknown, message: string): "routine" | "identity" |
   }
   for (const reason of IDENTITY_STAKE_REVERTS) {
     if (message.includes(reason)) return "identity";
+  }
+  for (const reason of SOURCE_DATE_REVERTS) {
+    if (message.includes(reason)) return "source-date";
   }
   return "unknown";
 }
@@ -300,6 +315,7 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
 async function submitReportForMarket(
   clients: Awaited<ReturnType<typeof getOracleClients>>,
   market: ReportableMarket,
+  bound: StalenessBound,
 ): Promise<void> {
   const { publicClient, walletClient, account, config } = clients;
   const address = config.oracleAddress;
@@ -310,7 +326,7 @@ async function submitReportForMarket(
   try {
     price = await traceSpan(
       "reporter.fetch_price",
-      () => fetchScaledPrice(market.productCode),
+      () => fetchScaledPrice(market.productCode, bound),
       { productCode: market.productCode },
     );
   } catch (err) {
@@ -395,6 +411,18 @@ async function submitReportForMarket(
           );
           return null; // still skip this market, but loudly rather than as a routine info line
         }
+        if (classification === "source-date") {
+          // Skip this market, not the cycle. Loud because it means we paid gas
+          // to learn the chain disagrees with the bound we just enforced -
+          // usually the value moved between our read and inclusion, or the
+          // submit margin is too thin for current block times.
+          console.error(
+            `[reporter] ALERT: ${market.productCode} (${market.questionId}) was rejected on its sourceDate ` +
+              `after passing the local staleness check - the node's window and the chain's have diverged. ` +
+              `Enforced [${describeStalenessBound(bound)}]: ${message.split('\n')[0]}`,
+          );
+          return null;
+        }
         throw err;
       }
     },
@@ -459,9 +487,19 @@ async function runCycle(): Promise<void> {
 
       if (!(await ensureActive(clients))) return;
 
+      // Re-read the on-chain MAX_SOURCE_DATE_AGE every cycle. It is about to
+      // become governance-settable, and an operator widening it to end an
+      // outage must not have to restart this container for it to take effect.
+      //
+      // Resolved once here and threaded into every market below, so one cycle
+      // judges every market against the same window. Must stay ahead of
+      // discoverReportableMarkets() - test/staleness.test.ts pins that ordering,
+      // because deleting this line would silently restore per-process caching.
+      const bound = await refreshStalenessBound();
+
       const markets = await discoverReportableMarkets();
       for (const market of markets) {
-        await submitReportForMarket(clients, market);
+        await submitReportForMarket(clients, market, bound);
       }
       
       consecutiveRpcFailures = 0; // reset on success
@@ -493,6 +531,10 @@ export async function startReporterLoop(): Promise<void> {
   // Runs the abi-drift-guard domain-separator check before anything else.
   const clients = await getOracleClients();
   await ensureEnrolled(clients);
+
+  // Surface the resolved staleness window at startup, so "why is it skipping"
+  // is answerable from the first log lines instead of guessed at.
+  console.log(`[reporter] staleness: ${describeStalenessBound(await refreshStalenessBound())}`);
 
   void runCycle();
   setInterval(() => void runCycle(), config.pollIntervalMs);

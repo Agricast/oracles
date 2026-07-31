@@ -1,6 +1,7 @@
 import { loadConfig } from "./config.js";
 import { scrapeMocProduct } from "./moc-scraper.js";
 import { MAX_PLAUSIBLE_PRICE } from "./price-plausibility.js";
+import { describeStalenessBound, hoursOf, type StalenessBound } from "./staleness.js";
 
 /**
  * Expected shape of a price quote, whether scraped directly from MOC
@@ -70,14 +71,6 @@ async function fetchFromMoc(productCode: string): Promise<PriceQuote> {
 }
 
 /**
- * Validates and scales a raw PriceQuote (from either source) to the
- * contract's 6-decimal fixed-point convention. Throws StalePriceError if
- * the source's data is older than STALE_PRICE_HOURS - the contract itself
- * also rejects a sourceDate older than MAX_SOURCE_DATE_AGE (3 days), but
- * the reporter's own staleness window should be tighter so it doesn't sign
- * data nobody wants.
- */
-/**
  * Bounds check for a raw (un-scaled) price. Neither source is trusted -
  * the direct MOC scrape renders attacker-reachable remote content
  * (data.moc.go.th) and the backend feed is itself MOC-derived - so a
@@ -111,9 +104,16 @@ function assertPlausiblePrice(quote: PriceQuote): void {
   }
 }
 
-function toScaledPrice(quote: PriceQuote): ScaledPrice {
-  const config = loadConfig();
-
+/**
+ * Validates and scales a raw PriceQuote (from either source) to the contract's
+ * 6-decimal fixed-point convention. Throws StalePriceError when the source data
+ * is older than `bound` - the window resolved in src/staleness.ts from the
+ * on-chain MAX_SOURCE_DATE_AGE, optionally tightened by STALE_PRICE_HOURS.
+ *
+ * The bound is passed in rather than read here so this stays synchronous and so
+ * one reporting cycle resolves it once instead of once per market.
+ */
+export function toScaledPrice(quote: PriceQuote, bound: StalenessBound): ScaledPrice {
   assertPlausiblePrice(quote);
 
   const sourceDateMs = new Date(quote.date).getTime();
@@ -122,10 +122,14 @@ function toScaledPrice(quote: PriceQuote): ScaledPrice {
   }
 
   const ageMs = Date.now() - sourceDateMs;
-  if (ageMs > config.staleThresholdMs) {
+  if (ageMs > bound.effectiveMs) {
+    // Names both numbers and which one rejected the price. The old message named
+    // only STALE_PRICE_HOURS, so an operator widening the on-chain limit saw no
+    // change and no explanation - four days of outage diagnosed without the
+    // on-chain bound ever entering the conversation.
     throw new StalePriceError(
-      `Price for ${quote.productCode} is ${Math.round(ageMs / 3_600_000)}h old, ` +
-        `older than STALE_PRICE_HOURS (${config.staleThresholdMs / 3_600_000}h)`,
+      `Price for ${quote.productCode} is ${hoursOf(ageMs)}h old, older than the effective ` +
+        `staleness bound of ${hoursOf(bound.effectiveMs)}h [${describeStalenessBound(bound)}]`,
     );
   }
   if (sourceDateMs > Date.now()) {
@@ -146,14 +150,20 @@ function toScaledPrice(quote: PriceQuote): ScaledPrice {
  * backend's own feed. If the direct scrape fails (MOC down/blocked/slow)
  * or MOC_ENABLED=false, falls back to the backend's PRICE_SOURCE_URL feed
  * so the reporter keeps submitting instead of crash-looping or going dark.
+ *
+ * `bound` is resolved once per reporting cycle by the caller and threaded in, so
+ * every market in one cycle is judged against the same window. Re-resolving here
+ * meant a long cycle could cross the TTL and judge later markets against a
+ * different bound than earlier ones - and a flaky RPC at that instant would give
+ * later markets the fallback ceiling while earlier ones got the live value.
  */
-export async function fetchScaledPrice(productCode: string): Promise<ScaledPrice> {
+export async function fetchScaledPrice(productCode: string, bound: StalenessBound): Promise<ScaledPrice> {
   const config = loadConfig();
 
   if (config.mocEnabled) {
     try {
       const quote = await fetchFromMoc(productCode);
-      return toScaledPrice(quote);
+      return toScaledPrice(quote, bound);
     } catch (err) {
       // An implausible price is not a transient scrape/network failure -
       // falling back would just ask the (also MOC-derived) backend feed
@@ -169,5 +179,5 @@ export async function fetchScaledPrice(productCode: string): Promise<ScaledPrice
   }
 
   const quote = await fetchFromBackend(productCode);
-  return toScaledPrice(quote);
+  return toScaledPrice(quote, bound);
 }

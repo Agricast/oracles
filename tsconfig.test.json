@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // The build's rootDir is src/ so dist/ stays flat. This config only
+    // typechecks, so it widens rootDir to include test/ without affecting
+    // `npm run build`.
+    "rootDir": ".",
+    "types": ["node", "bun"]
+  },
+  "include": ["src/**/*", "test/**/*"]
+}
