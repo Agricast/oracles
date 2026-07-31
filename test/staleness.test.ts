@@ -31,6 +31,18 @@ const SUBMIT_MARGIN = 5 * MINUTE;
 // of sustained failure before the remembered chain value is discarded.
 const FAILURES_BEFORE_EXPIRY = 10;
 
+// OracleConstants.MIN_SOURCE_DATE_AGE - the tightest value governance may set,
+// and so the only ceiling that cannot be looser than the live chain value when
+// the node has never managed a read.
+const CONTRACT_FLOOR = 24 * HOUR;
+
+// Deliberately NOT 72h. The old fallback was the 3-day MAX_SOURCE_DATE_AGE
+// default, which is numerically equal to today's live chain value - so a test
+// asserting 72h could pass whether the code read the chain or fell back to the
+// constant. Chain-path tests use a value that matches neither the default nor
+// the floor, so "it came from the chain" is actually pinned.
+const CHAIN_12H_SECONDS = 12n * 3600n;
+
 // The live value on the deployed diamond, verified with
 //   cast call 0xEd6eDf5C44fDD21a4D1073fCcF4eC3C22525BE62 "MAX_SOURCE_DATE_AGE()(uint256)"
 // which returns 259200 (72h).
@@ -126,7 +138,11 @@ describe("computeStalenessBound", () => {
     expect(bound.effectiveMs).toBeLessThan(bound.localMs);
   });
 
-  test("with no successful read ever, the ceiling is the contract's own default", () => {
+  // With no read ever, the ceiling must be the tightest value governance is
+  // ALLOWED to set, not the 3-day default. maxSourceDateAge is settable, so the
+  // live value can be tighter than the default, and a fallback looser than the
+  // live value fails open - signing prices the chain will reject.
+  test("with no successful read ever, the ceiling is the contract's governance floor", () => {
     const bound = computeStalenessBound({
       localMs: 240 * HOUR,
       localExplicit: true,
@@ -135,10 +151,29 @@ describe("computeStalenessBound", () => {
       chainError: "HTTP request failed",
     });
 
-    // OracleConstants.MAX_SOURCE_DATE_AGE = 3 days.
-    expect(bound.effectiveMs).toBe(72 * HOUR - SUBMIT_MARGIN);
-    expect(bound.ceilingSource).toBe("contract-default");
+    // OracleConstants.MIN_SOURCE_DATE_AGE = 1 day, NOT MAX_SOURCE_DATE_AGE = 3 days.
+    expect(bound.effectiveMs).toBe(CONTRACT_FLOOR - SUBMIT_MARGIN);
+    expect(bound.ceilingSource).toBe("contract-floor");
     expect(bound.clamped).toBe(true);
+  });
+
+  // The whole point of the floor: it cannot be looser than a tightened chain.
+  test("the never-read ceiling is never looser than the tightest settable chain value", () => {
+    const blind = computeStalenessBound({
+      localMs: 48 * HOUR,
+      localExplicit: false,
+      chainMs: null,
+      lastKnownChainMs: null,
+      chainError: "HTTP request failed",
+    });
+    // Governance tightens all the way to the floor.
+    const tightest = computeStalenessBound({
+      localMs: 48 * HOUR,
+      localExplicit: false,
+      chainMs: CONTRACT_FLOOR,
+    });
+
+    expect(blind.effectiveMs).toBeLessThanOrEqual(tightest.effectiveMs);
   });
 
   test("a failed read keeps a tighter local value applying", () => {
@@ -195,11 +230,36 @@ describe("assertSaneChainAgeSeconds", () => {
   // LOW-1: the band mirrors the contract's own governance bounds, so a value the
   // setter would have rejected is not silently obeyed here.
   // OracleConstants.MIN_SOURCE_DATE_AGE = 1 hours, MAX_SOURCE_DATE_AGE_LIMIT = 30 days.
-  test("mirrors the contract's settable range exactly", () => {
-    expect(assertSaneChainAgeSeconds(3600n)).toBe(3600n);
+  // Mirrors the contract's CEILING exactly, and is deliberately looser than its
+  // floor - see the sub-floor test below for why.
+  test("mirrors MAX_SOURCE_DATE_AGE_LIMIT exactly and stays permissive below the floor", () => {
     expect(assertSaneChainAgeSeconds(30n * 24n * 3600n)).toBe(30n * 24n * 3600n);
-    expect(() => assertSaneChainAgeSeconds(3599n)).toThrow(/outside the sane range/);
     expect(() => assertSaneChainAgeSeconds(30n * 24n * 3600n + 1n)).toThrow(/outside the sane range/);
+
+    // Below OracleConstants.MIN_SOURCE_DATE_AGE (1 day) and still accepted.
+    expect(assertSaneChainAgeSeconds(3600n)).toBe(3600n);
+    // Only values too small to be any policy at all are refused.
+    expect(() => assertSaneChainAgeSeconds(3599n)).toThrow(/outside the sane range/);
+  });
+
+  // The band is deliberately asymmetric. Too LARGE is dangerous (it would make
+  // the node looser than the chain) so it is rejected. Too SMALL is the safe
+  // direction, and rejecting it would swap a tight real value for the looser
+  // fallback - the exact failing-open being fixed here. A sub-floor value can
+  // legitimately sit in AppStorage if it was written before the floor was raised.
+  test("honours a chain value below the contract's governance floor rather than replacing it", () => {
+    expect(assertSaneChainAgeSeconds(CHAIN_12H_SECONDS)).toBe(CHAIN_12H_SECONDS);
+
+    const bound = computeStalenessBound({
+      localMs: 48 * HOUR,
+      localExplicit: false,
+      chainMs: 12 * HOUR,
+    });
+
+    expect(bound.effectiveMs).toBe(12 * HOUR - SUBMIT_MARGIN);
+    expect(bound.ceilingSource).toBe("chain");
+    // Tighter than the blind fallback, and honoured rather than widened to it.
+    expect(bound.effectiveMs).toBeLessThan(CONTRACT_FLOOR - SUBMIT_MARGIN);
   });
 
   test("rejects zero and absurd values rather than obeying them", () => {
@@ -294,6 +354,20 @@ describe("getStalenessBound", () => {
     expect(bound.source).toBe("chain");
   });
 
+  // Task 21 end to end: governance tightens below the blind fallback, and the
+  // node must follow the chain down rather than sit at its own looser number.
+  test("follows a tightened chain value below the blind fallback", async () => {
+    setBaseEnv();
+    setMaxSourceDateAgeReader(async () => CHAIN_12H_SECONDS);
+
+    const bound = await getStalenessBound();
+
+    expect(bound.chainMs).toBe(12 * HOUR);
+    expect(bound.effectiveMs).toBe(12 * HOUR - SUBMIT_MARGIN);
+    expect(bound.ceilingSource).toBe("chain");
+    expect(bound.effectiveMs).toBeLessThan(CONTRACT_FLOOR - SUBMIT_MARGIN);
+  });
+
   test("a local override tightens the chain value", async () => {
     setBaseEnv({ STALE_PRICE_HOURS: "24" });
     setMaxSourceDateAgeReader(async () => CHAIN_72H_SECONDS);
@@ -315,7 +389,7 @@ describe("getStalenessBound", () => {
     expect(bound.clamped).toBe(true);
   });
 
-  test("a failed chain read holds the contract-default ceiling and logs the failure", async () => {
+  test("a failed chain read holds the contract-floor ceiling and logs the failure", async () => {
     setBaseEnv();
     const logged: string[] = [];
     console.error = (...args: unknown[]) => void logged.push(args.join(" "));
@@ -325,9 +399,9 @@ describe("getStalenessBound", () => {
 
     const bound = await getStalenessBound();
 
-    expect(bound.effectiveMs).toBe(72 * HOUR - SUBMIT_MARGIN);
+    expect(bound.effectiveMs).toBe(CONTRACT_FLOOR - SUBMIT_MARGIN);
     expect(bound.source).toBe("fallback");
-    expect(bound.ceilingSource).toBe("contract-default");
+    expect(bound.ceilingSource).toBe("contract-floor");
     // A bad RPC has to look like a bad RPC, not like a stale price.
     expect(logged.join("\n")).toContain("ECONNREFUSED");
     expect(logged.join("\n")).toContain("MAX_SOURCE_DATE_AGE");
@@ -360,7 +434,7 @@ describe("getStalenessBound", () => {
   // F1. Holding the remembered value forever means that if governance TIGHTENS
   // while the RPC is down, the node sits looser than the chain and pays reverts
   // until the RPC returns. After a sustained run of failures the memory expires
-  // and the ceiling converges on the contract default.
+  // and the ceiling converges on the contract's governance floor.
   test("the remembered value expires after a sustained run of failures", async () => {
     setBaseEnv({ STALE_PRICE_HOURS: "240" });
     let onChain: bigint | null = 10n * 24n * 3600n;
@@ -381,18 +455,18 @@ describe("getStalenessBound", () => {
       expect(bound.effectiveMs).toBe(240 * HOUR - SUBMIT_MARGIN);
     }
 
-    // The 10th drops it to the contract default.
+    // The 10th drops it to the contract's governance floor.
     const expired = await refreshStalenessBound();
-    expect(expired.ceilingSource).toBe("contract-default");
-    expect(expired.effectiveMs).toBe(72 * HOUR - SUBMIT_MARGIN);
+    expect(expired.ceilingSource).toBe("contract-floor");
+    expect(expired.effectiveMs).toBe(CONTRACT_FLOOR - SUBMIT_MARGIN);
     expect(expired.clamped).toBe(true);
     expect(logged.join("\n")).toContain("EXPIRED");
 
     // It stays expired while the outage continues, and never falls back to the
     // local 240h under any condition.
     const stillDown = await refreshStalenessBound();
-    expect(stillDown.ceilingSource).toBe("contract-default");
-    expect(stillDown.effectiveMs).toBe(72 * HOUR - SUBMIT_MARGIN);
+    expect(stillDown.ceilingSource).toBe("contract-floor");
+    expect(stillDown.effectiveMs).toBe(CONTRACT_FLOOR - SUBMIT_MARGIN);
   });
 
   test("one successful read resets the failure run", async () => {
@@ -486,7 +560,7 @@ describe("the 2026-07-27 price, before and after", () => {
       source: "fallback",
       clamped: false,
       ceilingMs: 48 * HOUR,
-      ceilingSource: "contract-default",
+      ceilingSource: "contract-floor",
     };
 
     expect(() => toScaledPrice(quote(PRICE_DATE_2026_07_27), oldBound)).toThrow(StalePriceError);

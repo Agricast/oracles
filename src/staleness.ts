@@ -33,24 +33,45 @@ export interface StalenessBound {
   clamped: boolean;
   /** The ceiling used, and where it came from, when the live read failed. */
   ceilingMs: number;
-  ceilingSource: "chain" | "last-known-chain" | "contract-default";
+  ceilingSource: "chain" | "last-known-chain" | "contract-floor";
 }
 
-// Mirrors the contract's own governance bounds: OracleAdminFacet.setMaxSourceDateAge
-// reverts InvalidSourceDateAge outside [MIN_SOURCE_DATE_AGE, MAX_SOURCE_DATE_AGE_LIMIT]
-// (OracleConstants.sol - 1 hours and 30 days). A decoded value outside that range
-// cannot have been set through the setter, so it is far likelier to be an
-// ABI/decode problem than a real policy, and obeying it silently would look
-// exactly like the bug this module exists to remove.
-const MIN_SANE_CHAIN_AGE_SECONDS = 3600n; // OracleConstants.MIN_SOURCE_DATE_AGE = 1 hours
+// Upper end mirrors OracleConstants.MAX_SOURCE_DATE_AGE_LIMIT: the setter reverts
+// InvalidSourceDateAge above it, so a larger decoded value cannot have come from
+// governance and is far likelier to be an ABI/decode problem. Obeying it would
+// make the node looser than the chain, which is the bug this module exists to
+// remove.
+//
+// The lower end deliberately does NOT mirror the contract's governance floor
+// (OracleConstants.MIN_SOURCE_DATE_AGE, currently 1 day). Rejecting a value for
+// being BELOW the floor would replace something tight with the looser fallback
+// below - the same failing-open this file is about - and a sub-floor value can
+// legitimately sit in AppStorage if it was written before the floor was raised.
+// A too-tight value is the safe direction, so it is honoured. This bound only
+// catches values so small they cannot be a policy at all (a 0 or garbage decode
+// would otherwise blackhole the node into skipping every price).
+const MIN_SANE_CHAIN_AGE_SECONDS = 3600n; // decode-sanity floor, NOT the governance floor
 const MAX_SANE_CHAIN_AGE_SECONDS = 30n * 24n * 3600n; // OracleConstants.MAX_SOURCE_DATE_AGE_LIMIT = 30 days
 
-// OracleConstants.MAX_SOURCE_DATE_AGE - what LibOracleConfig.maxSourceDateAge()
-// returns when AppStorage.maxSourceDateAge is unset. Used ONLY as the ceiling of
-// last resort, when a read has failed and no value has ever been read
-// successfully. It is never an enforced bound on its own - a local value tighter
-// than it still wins - so it does not become a fourth competing threshold.
-const CONTRACT_DEFAULT_MAX_SOURCE_DATE_AGE_MS = 3 * 24 * 3600 * 1000;
+// OracleConstants.MIN_SOURCE_DATE_AGE - the tightest value governance is allowed
+// to set. Used ONLY as the ceiling of last resort, when the live read failed and
+// no value has ever been read successfully.
+//
+// The floor, deliberately, and NOT the 3-day MAX_SOURCE_DATE_AGE default. The
+// default is what the contract enforces when nobody has set anything, but
+// maxSourceDateAge is settable now, so the live value can be tighter than the
+// default - and a fallback looser than the live value fails open, signing prices
+// the chain will reject. The floor is the only number that cannot be looser than
+// what the chain is enforcing, whatever governance has done, because the setter
+// refuses to go below it.
+//
+// It is also usable rather than merely safe: the contract picked 1 day precisely
+// so the bound clears MOC's publishing cadence (see the comment on
+// MIN_SOURCE_DATE_AGE), so a normally-fresh daily price still submits while the
+// node is running blind. On a bad publish lag it will skip prices the chain would
+// have taken - the safe direction, and it self-corrects on the first successful
+// read.
+const CONTRACT_MIN_SOURCE_DATE_AGE_MS = 24 * 3600 * 1000;
 
 /**
  * Subtracted from the chain's value to get the ceiling the node enforces.
@@ -112,13 +133,13 @@ export function computeStalenessBound(input: {
   //
   // The retained value is not held forever: the caller expires it after a run of
   // consecutive failures and passes null, so a persistent outage converges here
-  // on the contract default. That bounds the one case where this can still sit
+  // on the contract's governance floor. That bounds the one case where this could sit
   // looser than the chain - governance TIGHTENS while the RPC is down, so the
   // remembered wider value no longer reflects what submitReport will accept.
   const rawCeiling = chainMs ?? lastKnownChainMs ?? null;
   const ceilingSource: StalenessBound["ceilingSource"] =
-    chainMs !== null ? "chain" : lastKnownChainMs != null ? "last-known-chain" : "contract-default";
-  const ceilingMs = Math.max((rawCeiling ?? CONTRACT_DEFAULT_MAX_SOURCE_DATE_AGE_MS) - SUBMIT_MARGIN_MS, 0);
+    chainMs !== null ? "chain" : lastKnownChainMs != null ? "last-known-chain" : "contract-floor";
+  const ceilingMs = Math.max((rawCeiling ?? CONTRACT_MIN_SOURCE_DATE_AGE_MS) - SUBMIT_MARGIN_MS, 0);
 
   const localWins = localExplicit && localMs < ceilingMs;
   const effectiveMs = localWins ? localMs : ceilingMs;
@@ -151,7 +172,7 @@ export function describeStalenessBound(bound: StalenessBound): string {
       ? `on-chain MAX_SOURCE_DATE_AGE=${hoursOf(bound.chainMs ?? 0)}h`
       : bound.ceilingSource === "last-known-chain"
         ? "last known on-chain MAX_SOURCE_DATE_AGE"
-        : "contract default MAX_SOURCE_DATE_AGE=72h";
+        : `contract governance floor MIN_SOURCE_DATE_AGE=${hoursOf(CONTRACT_MIN_SOURCE_DATE_AGE_MS)}h`;
 
   const ceiling =
     `ceiling=${hoursOf(bound.ceilingMs)}h (${ceilingOrigin} less ${SUBMIT_MARGIN_MS / 60_000}min submit margin)`;
@@ -160,9 +181,13 @@ export function describeStalenessBound(bound: StalenessBound): string {
 
   if (bound.chainMs === null) {
     const why = bound.clamped ? `${local} is looser than the ceiling and was clamped` : local;
+    const blind =
+      bound.ceilingSource === "contract-floor"
+        ? " and no value has ever been read, so the node is running deliberately tight until one succeeds"
+        : "";
     return (
       `${head} from ${why}, ${ceiling}; ` +
-      `live read FAILED (${bound.chainError ?? "read failed"}) - bound is NOT from a live chain read`
+      `live read FAILED (${bound.chainError ?? "read failed"}) - bound is NOT from a live chain read${blind}`
     );
   }
 
@@ -260,7 +285,7 @@ let consecutiveChainReadFailures = 0;
 
 /**
  * How many consecutive failed reads before the remembered chain value is thrown
- * away and the ceiling drops to the contract default.
+ * away and the ceiling drops to the contract's governance floor.
  *
  * refreshStalenessBound() runs once per reporting cycle, so this counts cycles:
  * at the default POLL_INTERVAL_MS of 30s, 10 failures is about 5 minutes of
@@ -322,7 +347,7 @@ async function resolveStalenessBound(): Promise<StalenessBound> {
     const ceiling =
       lastKnownChainMs != null
         ? `last known on-chain value (${hoursOf(lastKnownChainMs)}h)`
-        : `the contract default (${hoursOf(CONTRACT_DEFAULT_MAX_SOURCE_DATE_AGE_MS)}h)` +
+        : `the contract governance floor (${hoursOf(CONTRACT_MIN_SOURCE_DATE_AGE_MS)}h)` +
           (expiredNow
             ? ` - the remembered on-chain value has just been EXPIRED after ` +
               `${consecutiveChainReadFailures} consecutive failed reads, in case governance ` +
