@@ -26,6 +26,11 @@ const MINUTE = 60_000;
 // outside it by inclusion time.
 const SUBMIT_MARGIN = 5 * MINUTE;
 
+// staleness.ts MAX_CONSECUTIVE_FAILURES_BEFORE_EXPIRY. One read attempt per
+// reporting cycle, so at the default POLL_INTERVAL_MS of 30s this is ~5 minutes
+// of sustained failure before the remembered chain value is discarded.
+const FAILURES_BEFORE_EXPIRY = 10;
+
 // The live value on the deployed diamond, verified with
 //   cast call 0xEd6eDf5C44fDD21a4D1073fCcF4eC3C22525BE62 "MAX_SOURCE_DATE_AGE()(uint256)"
 // which returns 259200 (72h).
@@ -330,7 +335,9 @@ describe("getStalenessBound", () => {
   });
 
   // HIGH-1 end to end, through the real cache and last-known retention.
-  test("a read failure after a successful one keeps clamping to the last known value", async () => {
+  // A brief blip must NOT throw away a widened limit - that is the Thai-holiday
+  // case the whole module exists for.
+  test("a short run of read failures keeps clamping to the last known value", async () => {
     setBaseEnv({ STALE_PRICE_HOURS: "240" });
     let onChain: bigint | null = 10n * 24n * 3600n; // operator widened to 10 days
     console.error = () => {};
@@ -348,6 +355,68 @@ describe("getStalenessBound", () => {
     expect(afterFailure.effectiveMs).toBe(240 * HOUR - SUBMIT_MARGIN);
     // Still clamped - the local 240h never becomes the bound on its own.
     expect(afterFailure.clamped).toBe(true);
+  });
+
+  // F1. Holding the remembered value forever means that if governance TIGHTENS
+  // while the RPC is down, the node sits looser than the chain and pays reverts
+  // until the RPC returns. After a sustained run of failures the memory expires
+  // and the ceiling converges on the contract default.
+  test("the remembered value expires after a sustained run of failures", async () => {
+    setBaseEnv({ STALE_PRICE_HOURS: "240" });
+    let onChain: bigint | null = 10n * 24n * 3600n;
+    const logged: string[] = [];
+    console.error = (...args: unknown[]) => void logged.push(args.join(" "));
+    setMaxSourceDateAgeReader(async () => {
+      if (onChain === null) throw new Error("connect ECONNREFUSED 127.0.0.1:8545");
+      return onChain;
+    });
+
+    await refreshStalenessBound();
+    onChain = null;
+
+    // Failures 1..9 keep the widened value.
+    for (let i = 1; i < FAILURES_BEFORE_EXPIRY; i += 1) {
+      const bound = await refreshStalenessBound();
+      expect(bound.ceilingSource).toBe("last-known-chain");
+      expect(bound.effectiveMs).toBe(240 * HOUR - SUBMIT_MARGIN);
+    }
+
+    // The 10th drops it to the contract default.
+    const expired = await refreshStalenessBound();
+    expect(expired.ceilingSource).toBe("contract-default");
+    expect(expired.effectiveMs).toBe(72 * HOUR - SUBMIT_MARGIN);
+    expect(expired.clamped).toBe(true);
+    expect(logged.join("\n")).toContain("EXPIRED");
+
+    // It stays expired while the outage continues, and never falls back to the
+    // local 240h under any condition.
+    const stillDown = await refreshStalenessBound();
+    expect(stillDown.ceilingSource).toBe("contract-default");
+    expect(stillDown.effectiveMs).toBe(72 * HOUR - SUBMIT_MARGIN);
+  });
+
+  test("one successful read resets the failure run", async () => {
+    setBaseEnv();
+    let onChain: bigint | null = 10n * 24n * 3600n;
+    console.error = () => {};
+    setMaxSourceDateAgeReader(async () => {
+      if (onChain === null) throw new Error("connect ECONNREFUSED 127.0.0.1:8545");
+      return onChain;
+    });
+
+    await refreshStalenessBound();
+
+    // Nine failures, then the RPC comes back.
+    onChain = null;
+    for (let i = 1; i < FAILURES_BEFORE_EXPIRY; i += 1) await refreshStalenessBound();
+    onChain = 10n * 24n * 3600n;
+    expect((await refreshStalenessBound()).ceilingSource).toBe("chain");
+
+    // The counter restarted, so the next nine failures must not expire it.
+    onChain = null;
+    for (let i = 1; i < FAILURES_BEFORE_EXPIRY; i += 1) {
+      expect((await refreshStalenessBound()).ceilingSource).toBe("last-known-chain");
+    }
   });
 
   test("the chain value is re-read, never cached for the process lifetime", async () => {
@@ -449,7 +518,7 @@ describe("the 2026-07-27 price, before and after", () => {
   // `sourceDate + maxAge < block.timestamp` (OracleReportingFacet.sol), so an age
   // exactly equal to the bound is ACCEPTED, and the node must match that or it
   // skips a price the chain would have taken.
-  test("an age exactly equal to the bound is accepted, matching the contract", () => {
+  test("toScaledPrice accepts an age exactly equal to a hand-built bound, matching the contract", () => {
     const ageMs = Date.now() - new Date(PRICE_DATE_2026_07_27).getTime();
     const exact: StalenessBound = {
       effectiveMs: ageMs,
@@ -465,7 +534,7 @@ describe("the 2026-07-27 price, before and after", () => {
     expect(() => toScaledPrice(quote(PRICE_DATE_2026_07_27), exact)).not.toThrow();
   });
 
-  test("one millisecond past the bound is rejected", () => {
+  test("toScaledPrice rejects one millisecond past a hand-built bound", () => {
     const ageMs = Date.now() - new Date(PRICE_DATE_2026_07_27).getTime();
     const justOver: StalenessBound = {
       effectiveMs: ageMs - 1,

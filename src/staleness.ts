@@ -109,6 +109,12 @@ export function computeStalenessBound(input: {
   // The ceiling is the chain's value less the submit margin. When the live read
   // failed, fall back to the last value actually read, then to the contract's
   // default - never to the local value, which is what the clamp exists to bound.
+  //
+  // The retained value is not held forever: the caller expires it after a run of
+  // consecutive failures and passes null, so a persistent outage converges here
+  // on the contract default. That bounds the one case where this can still sit
+  // looser than the chain - governance TIGHTENS while the RPC is down, so the
+  // remembered wider value no longer reflects what submitReport will accept.
   const rawCeiling = chainMs ?? lastKnownChainMs ?? null;
   const ceilingSource: StalenessBound["ceilingSource"] =
     chainMs !== null ? "chain" : lastKnownChainMs != null ? "last-known-chain" : "contract-default";
@@ -181,7 +187,9 @@ let readerClient: PublicClient | null = null;
  * into a path that only ever calls a view function. The tradeoff is that a
  * MAX_SOURCE_DATE_AGE read is not covered by the abi-drift guards - which is why
  * the decoded value is range-checked against the contract's own governance
- * bounds below rather than trusted.
+ * bounds below rather than trusted. It likewise makes no chainId assertion of
+ * its own, relying on the startup check in getOracleClients() having already
+ * validated the same RPC_URL this client is built from.
  */
 function getReaderClient(rpcUrl: string): PublicClient {
   if (!readerClient) {
@@ -248,6 +256,30 @@ let cache: { bound: StalenessBound; readAt: number } | null = null;
 // remembered value is the only thing keeping the tighten-only clamp honest.
 let lastKnownChainMs: number | null = null;
 
+let consecutiveChainReadFailures = 0;
+
+/**
+ * How many consecutive failed reads before the remembered chain value is thrown
+ * away and the ceiling drops to the contract default.
+ *
+ * refreshStalenessBound() runs once per reporting cycle, so this counts cycles:
+ * at the default POLL_INTERVAL_MS of 30s, 10 failures is about 5 minutes of
+ * sustained failure. That is deliberately far more than a transient blip (a
+ * dropped connection or a provider hiccup costs one or two cycles) and far less
+ * than an outage during which governance could plausibly retune the contract.
+ *
+ * The tradeoff being priced: holding the remembered value keeps a widened limit
+ * working through a blip, which is the Thai-holiday case this module exists for.
+ * Holding it forever means that if governance TIGHTENS while the RPC is down, we
+ * sit looser than the chain and pay reverts until the RPC returns. Expiring
+ * converges on the safe side instead.
+ *
+ * Note the wall-clock scales with POLL_INTERVAL_MS - a node polling every 5
+ * minutes takes ~50 minutes to expire. Bounded and loudly logged either way, but
+ * worth knowing before setting a long poll interval.
+ */
+const MAX_CONSECUTIVE_FAILURES_BEFORE_EXPIRY = 10;
+
 export function resetStalenessBoundCache(): void {
   cache = null;
   readerClient = null;
@@ -259,6 +291,7 @@ export function resetStalenessBoundCache(): void {
  */
 export function resetLastKnownChainValue(): void {
   lastKnownChainMs = null;
+  consecutiveChainReadFailures = 0;
 }
 
 async function resolveStalenessBound(): Promise<StalenessBound> {
@@ -270,8 +303,17 @@ async function resolveStalenessBound(): Promise<StalenessBound> {
     const seconds = assertSaneChainAgeSeconds(await reader());
     chainMs = Number(seconds) * 1000;
     lastKnownChainMs = chainMs;
+    consecutiveChainReadFailures = 0;
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
+
+    consecutiveChainReadFailures += 1;
+    const expiredNow =
+      lastKnownChainMs !== null && consecutiveChainReadFailures >= MAX_CONSECUTIVE_FAILURES_BEFORE_EXPIRY;
+    if (expiredNow) {
+      lastKnownChainMs = null;
+    }
+
     // viem's contract errors are a 15-line dump. The full thing goes to the
     // error log once per TTL, where it is worth having; only the first line is
     // kept on the bound, because that one gets embedded in every per-market skip
@@ -280,13 +322,19 @@ async function resolveStalenessBound(): Promise<StalenessBound> {
     const ceiling =
       lastKnownChainMs != null
         ? `last known on-chain value (${hoursOf(lastKnownChainMs)}h)`
-        : `the contract default (${hoursOf(CONTRACT_DEFAULT_MAX_SOURCE_DATE_AGE_MS)}h)`;
+        : `the contract default (${hoursOf(CONTRACT_DEFAULT_MAX_SOURCE_DATE_AGE_MS)}h)` +
+          (expiredNow
+            ? ` - the remembered on-chain value has just been EXPIRED after ` +
+              `${consecutiveChainReadFailures} consecutive failed reads, in case governance ` +
+              `tightened the limit while this node could not see it`
+            : "");
     // Deliberately loud, and deliberately NOT quiet about the fallback: a node
     // that silently reverts to a hardcoded window during an RPC outage looks
     // exactly like a node seeing stale prices, which is the confusion this whole
     // change exists to end.
     console.error(
-      `[staleness] failed to read MAX_SOURCE_DATE_AGE from ${config.oracleAddress} via ${config.rpcUrl}: ` +
+      `[staleness] failed to read MAX_SOURCE_DATE_AGE from ${config.oracleAddress} via ${config.rpcUrl} ` +
+        `(consecutive failures: ${consecutiveChainReadFailures}): ` +
         `${detail} - holding the ceiling at ${ceiling}; STALE_PRICE_HOURS ` +
         `(${hoursOf(config.staleThresholdMs)}h) still applies only if it is tighter. ` +
         "This is an RPC/contract problem, not a stale price.",
