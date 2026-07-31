@@ -179,4 +179,10 @@ is stale relative to whatever contract you pointed it at - update `src/abi/AgriO
 npm run typecheck   # tsc --noEmit
 npm run build        # compile to dist/
 npm run dev           # tsx watch src/reporter.ts
+npm test              # bun test - unit tests, no RPC or .env needed
+npm run typecheck:test # tsc --noEmit over src/ + test/
 ```
+
+Tests run on bun (the package manager stays npm - `package-lock.json` is the
+lockfile, so install with `npm ci`, not `bun install`). `.github/workflows/ci.yml`
+runs the typechecks and the test suite on every push and PR to `main`.
