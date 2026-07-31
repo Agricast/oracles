@@ -1,5 +1,12 @@
 node_modules/
 dist/
+
+# This repo installs with npm - package-lock.json is the lockfile. Bun is here
+# only as the test runner (`bun test`), which does not install. A stray
+# `bun install` would drop a committable bun.lock and give the repo a second,
+# independently-resolved dependency tree.
+bun.lock
+
 .env
 .env.local
 *.log
