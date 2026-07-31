@@ -1,7 +1,7 @@
 import { loadConfig } from "./config.js";
 import { scrapeMocProduct } from "./moc-scraper.js";
 import { MAX_PLAUSIBLE_PRICE } from "./price-plausibility.js";
-import { getStalenessBound, describeStalenessBound, hoursOf, type StalenessBound } from "./staleness.js";
+import { describeStalenessBound, hoursOf, type StalenessBound } from "./staleness.js";
 
 /**
  * Expected shape of a price quote, whether scraped directly from MOC
@@ -150,10 +150,15 @@ export function toScaledPrice(quote: PriceQuote, bound: StalenessBound): ScaledP
  * backend's own feed. If the direct scrape fails (MOC down/blocked/slow)
  * or MOC_ENABLED=false, falls back to the backend's PRICE_SOURCE_URL feed
  * so the reporter keeps submitting instead of crash-looping or going dark.
+ *
+ * `bound` is resolved once per reporting cycle by the caller and threaded in, so
+ * every market in one cycle is judged against the same window. Re-resolving here
+ * meant a long cycle could cross the TTL and judge later markets against a
+ * different bound than earlier ones - and a flaky RPC at that instant would give
+ * later markets the fallback ceiling while earlier ones got the live value.
  */
-export async function fetchScaledPrice(productCode: string): Promise<ScaledPrice> {
+export async function fetchScaledPrice(productCode: string, bound: StalenessBound): Promise<ScaledPrice> {
   const config = loadConfig();
-  const bound = await getStalenessBound();
 
   if (config.mocEnabled) {
     try {

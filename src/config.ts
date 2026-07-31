@@ -184,13 +184,17 @@ export function loadConfig(): ReporterConfig {
     // is 48h here. Still fully overridable via STALE_PRICE_HOURS.
     //
     // That MOC-lag reason still holds, but this value is no longer the bound the
-    // node enforces. The on-chain MAX_SOURCE_DATE_AGE is (src/staleness.ts) - it
-    // is the thing that actually reverts, and at 72h it clears the ~2-day publish
-    // lag this 48h was working around by a wider margin than 48h ever did. This
-    // value now serves two narrower jobs: the fallback when the chain read fails
-    // (where the MOC-lag reason is exactly why 48h and not 12h is the right
-    // number to fall back to), and an optional operator override that may tighten
-    // the on-chain bound but never loosen past it.
+    // node enforces, and it is no longer the failure-path fallback either. The
+    // on-chain MAX_SOURCE_DATE_AGE is the bound (src/staleness.ts) - it is the
+    // thing that actually reverts, and at 72h it clears the ~2-day publish lag
+    // this 48h was working around by a wider margin than 48h ever did. When the
+    // chain read fails, the ceiling holds at the last value read, or the
+    // contract's own 3-day default - NOT at this number, because deriving the
+    // ceiling from a local value is what would let a looser local setting escape
+    // the tighten-only clamp exactly when an RPC hiccup makes it matter.
+    //
+    // So this value now has exactly one job: an optional operator override that
+    // may tighten the enforced window, never loosen it. Unset, it does nothing.
     staleThresholdMs: numEnv("STALE_PRICE_HOURS", 48) * 3600 * 1000,
     staleThresholdExplicit: isEnvSet("STALE_PRICE_HOURS"),
     // How long a read of the on-chain bound is reused. Tied to the poll interval
