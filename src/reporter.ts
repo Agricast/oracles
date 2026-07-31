@@ -4,6 +4,7 @@ import { loadConfig } from "./config.js";
 import { fetchScaledPrice, ImplausiblePriceError, StalePriceError } from "./price-source.js";
 import { discoverReportableMarkets, type ReportableMarket } from "./markets.js";
 import { SIGNED_PRICE_TYPES, AGRI_ORACLE_DOMAIN } from "./abi/domain.js";
+import { refreshStalenessBound, describeStalenessBound } from "./staleness.js";
 import { traceSpan, recordCycleDuration, incrementReportsSubmitted } from "./otel-init.js";
 
 // On top of stake + registration fee, require this much extra balance before
@@ -459,6 +460,11 @@ async function runCycle(): Promise<void> {
 
       if (!(await ensureActive(clients))) return;
 
+      // Re-read the on-chain MAX_SOURCE_DATE_AGE every cycle. It is about to
+      // become governance-settable, and an operator widening it to end an
+      // outage must not have to restart this container for it to take effect.
+      await refreshStalenessBound();
+
       const markets = await discoverReportableMarkets();
       for (const market of markets) {
         await submitReportForMarket(clients, market);
@@ -493,6 +499,10 @@ export async function startReporterLoop(): Promise<void> {
   // Runs the abi-drift-guard domain-separator check before anything else.
   const clients = await getOracleClients();
   await ensureEnrolled(clients);
+
+  // Surface the resolved staleness window at startup, so "why is it skipping"
+  // is answerable from the first log lines instead of guessed at.
+  console.log(`[reporter] staleness: ${describeStalenessBound(await refreshStalenessBound())}`);
 
   void runCycle();
   setInterval(() => void runCycle(), config.pollIntervalMs);

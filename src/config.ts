@@ -45,6 +45,18 @@ function numEnv(name: string, fallback: number): number {
 }
 
 /**
+ * Whether an env var was actually supplied, as opposed to falling back to a
+ * built-in default. Only staleness cares: an explicitly-set STALE_PRICE_HOURS
+ * is an operator policy that may tighten the on-chain bound, while the default
+ * expresses no intent and must not silently override the chain (see
+ * src/staleness.ts).
+ */
+function isEnvSet(name: string): boolean {
+  const raw = process.env[name];
+  return raw !== undefined && raw !== "";
+}
+
+/**
  * AUTO_ENROLL_STAKE isn't Number()-parsed - it's a decimal ETH string fed to
  * viem's parseEther() (see reporter.ts ensureEnrolled). Left unvalidated, a
  * malformed value only throws later, mid-startup, when auto-enroll actually
@@ -107,6 +119,8 @@ export interface ReporterConfig {
   marketsApiUrl: string;
   pollIntervalMs: number;
   staleThresholdMs: number;
+  staleThresholdExplicit: boolean;
+  stalenessBoundTtlMs: number;
   autoTopup: boolean;
   autoEnroll: boolean;
   autoEnrollStake?: string;
@@ -117,6 +131,14 @@ export interface ReporterConfig {
 }
 
 let cached: ReporterConfig | null = null;
+
+/**
+ * Test seam - drops the memoized config so a test can re-run loadConfig() under
+ * different env vars. Not called by the reporter at runtime.
+ */
+export function resetConfigCache(): void {
+  cached = null;
+}
 
 /**
  * Parses and validates env vars once, resolving the oracle address from
@@ -144,6 +166,8 @@ export function loadConfig(): ReporterConfig {
 
   const oracleAddress = resolveOracleAddress(network, chainId);
 
+  const pollIntervalMs = numEnv("POLL_INTERVAL_MS", 30_000);
+
   cached = {
     privateKey,
     rpcUrl,
@@ -152,13 +176,28 @@ export function loadConfig(): ReporterConfig {
     oracleAddress,
     priceSourceUrl: process.env.PRICE_SOURCE_URL ?? "",
     marketsApiUrl: process.env.MARKETS_API_URL ?? "",
-    pollIntervalMs: numEnv("POLL_INTERVAL_MS", 30_000),
+    pollIntervalMs,
     // MOC (Thai Ministry of Commerce) price rows are dated midnight-UTC and MOC
     // publishes with a lag - fresh data can already read ~15h old by evening
     // Bangkok time, and normal publish lag reaches ~2 days. A 12h default caused
     // false "skipping ... older than STALE_PRICE_HOURS" skips, so the fallback
     // is 48h here. Still fully overridable via STALE_PRICE_HOURS.
+    //
+    // That MOC-lag reason still holds, but this value is no longer the bound the
+    // node enforces. The on-chain MAX_SOURCE_DATE_AGE is (src/staleness.ts) - it
+    // is the thing that actually reverts, and at 72h it clears the ~2-day publish
+    // lag this 48h was working around by a wider margin than 48h ever did. This
+    // value now serves two narrower jobs: the fallback when the chain read fails
+    // (where the MOC-lag reason is exactly why 48h and not 12h is the right
+    // number to fall back to), and an optional operator override that may tighten
+    // the on-chain bound but never loosen past it.
     staleThresholdMs: numEnv("STALE_PRICE_HOURS", 48) * 3600 * 1000,
+    staleThresholdExplicit: isEnvSet("STALE_PRICE_HOURS"),
+    // How long a read of the on-chain bound is reused. Tied to the poll interval
+    // so the node re-reads about once per reporting cycle, capped at 60s so a
+    // long POLL_INTERVAL_MS can't leave a governance change unnoticed for hours.
+    // Never cached for the process lifetime - see src/staleness.ts.
+    stalenessBoundTtlMs: numEnv("STALENESS_BOUND_TTL_MS", Math.min(pollIntervalMs, 60_000)),
     autoTopup: parseBool(process.env.AUTO_TOPUP, false),
     // Public-safety default is manual (`cli register`) - AUTO_ENROLL opts a node into
     // self-registering on startup, for demo/docker-compose environments only.
