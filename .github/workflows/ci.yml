@@ -12,11 +12,10 @@ concurrency:
 
 # Pinned, not floating on `latest`, so a toolchain release cannot turn a green
 # repo red overnight without a commit that says so. Follows the pinning shape
-# the contracts repo uses for FOUNDRY_VERSION. Note this is the first pinned bun
-# version in the org - backend omits `bun-version` entirely and frontend sets it
-# to `latest`, so there was no existing pin to match.
+# the contracts repo uses for FOUNDRY_VERSION. Matches backend's and frontend's
+# BUN_VERSION - one version across the org, see agricast/CLAUDE.md.
 env:
-  BUN_VERSION: "1.3.4"
+  BUN_VERSION: "1.3.14"
   NODE_VERSION: "22"
 
 jobs:
