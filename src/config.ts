@@ -92,6 +92,26 @@ function resolveOracleAddress(network: NetworkName, chainId: number): Address {
 }
 
 /**
+ * The RPC transport every client in this package is built from.
+ *
+ * viem's own defaults are retryCount 3 at a flat retryDelay of 150ms against a
+ * 10s timeout - under half a second of cover for an RPC that stalls for ten.
+ * That is what the reporter kept hitting in production: 19 `eth_blockNumber`
+ * timeouts against rpc-agricast in 30 days, each one failing a whole cycle.
+ * Widen the cover so a stall has to persist before it takes a cycle down.
+ *
+ * All three overridable, because the right numbers depend on the RPC behind
+ * the URL and swapping that URL is a config change, not a code change.
+ */
+export function rpcTransport(rpcUrl: string) {
+  return http(rpcUrl, {
+    retryCount: numEnv("RPC_RETRY_COUNT", 5),
+    retryDelay: numEnv("RPC_RETRY_DELAY_MS", 500),
+    timeout: numEnv("RPC_TIMEOUT_MS", 20_000),
+  });
+}
+
+/**
  * eth_getCode against the configured RPC - a reporter pointed at an address
  * with no deployed bytecode (stale addresses.json fallback, wrong network,
  * typo'd ORACLE_ADDRESS) should refuse to start rather than run every
@@ -99,7 +119,7 @@ function resolveOracleAddress(network: NetworkName, chainId: number): Address {
  * getOracleClients() startup check.
  */
 export async function assertOracleAddressHasCode(rpcUrl: string, oracleAddress: Address): Promise<void> {
-  const client = createPublicClient({ transport: http(rpcUrl) });
+  const client = createPublicClient({ transport: rpcTransport(rpcUrl) });
   const code = await client.getCode({ address: oracleAddress });
   if (!code || code === "0x") {
     throw new Error(

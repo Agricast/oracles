@@ -1,5 +1,5 @@
-import { createPublicClient, http, type Address, type PublicClient } from "viem";
-import { loadConfig } from "./config.js";
+import { createPublicClient, type Address, type PublicClient } from "viem";
+import { loadConfig, rpcTransport } from "./config.js";
 import AgriOracleAbi from "./abi/AgriOracle.json" with { type: "json" };
 
 /**
@@ -218,7 +218,7 @@ let readerClient: PublicClient | null = null;
  */
 function getReaderClient(rpcUrl: string): PublicClient {
   if (!readerClient) {
-    readerClient = createPublicClient({ transport: http(rpcUrl) });
+    readerClient = createPublicClient({ transport: rpcTransport(rpcUrl) });
   }
   return readerClient;
 }

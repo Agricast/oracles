@@ -1,14 +1,13 @@
 import {
   createPublicClient,
   createWalletClient,
-  http,
   keccak256,
   encodeAbiParameters,
   stringToBytes,
   type Address,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { loadConfig, assertOracleAddressHasCode } from "./config.js";
+import { loadConfig, assertOracleAddressHasCode, rpcTransport } from "./config.js";
 import AgriOracleAbi from "./abi/AgriOracle.json" with { type: "json" };
 import { AGRI_ORACLE_DOMAIN, SIGNED_PRICE_TYPES } from "./abi/domain.js";
 
@@ -73,11 +72,11 @@ export async function getOracleClients() {
   const account = privateKeyToAccount(config.privateKey);
 
   const publicClient = createPublicClient({
-    transport: http(config.rpcUrl),
+    transport: rpcTransport(config.rpcUrl),
   });
   const walletClient = createWalletClient({
     account,
-    transport: http(config.rpcUrl),
+    transport: rpcTransport(config.rpcUrl),
   });
 
   // CHAIN_ID in .env is trusted for signing (it feeds the EIP-712 domain
