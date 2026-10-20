@@ -3,8 +3,8 @@ import { existsSync, mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { writeHeartbeat } from "../src/heartbeat";
-import { serviceInstanceId, serviceVersion } from "../src/release";
+import { writeHeartbeat } from "../src/heartbeat.js";
+import { serviceInstanceId, serviceVersion } from "../src/release.js";
 
 describe("serviceVersion", () => {
   test("uses the first 7 chars of GIT_COMMIT", () => {
