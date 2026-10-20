@@ -1,10 +1,11 @@
 import { formatEther, parseEther, BaseError, ContractFunctionRevertedError } from "viem";
 import { getOracleClients, AgriOracleAbi } from "./oracle.js";
 import { loadConfig } from "./config.js";
-import { fetchScaledPrice, ImplausiblePriceError, StalePriceError } from "./price-source.js";
+import { fetchScaledPrice, ImplausiblePriceError, StalePriceError, type ScaledPrice } from "./price-source.js";
 import { discoverReportableMarkets, type ReportableMarket } from "./markets.js";
 import { SIGNED_PRICE_TYPES, AGRI_ORACLE_DOMAIN } from "./abi/domain.js";
 import { refreshStalenessBound, describeStalenessBound, type StalenessBound } from "./staleness.js";
+import { createPriceCache, forEachIsolated, isTerminal, markTerminal, terminalRevertName } from "./cycle-state.js";
 import { traceSpan, recordCycleDuration, incrementReportsSubmitted } from "./otel-init.js";
 
 // On top of stake + registration fee, require this much extra balance before
@@ -316,17 +317,19 @@ async function submitReportForMarket(
   clients: Awaited<ReturnType<typeof getOracleClients>>,
   market: ReportableMarket,
   bound: StalenessBound,
+  getPrice: (productCode: string) => Promise<ScaledPrice>,
 ): Promise<void> {
   const { publicClient, walletClient, account, config } = clients;
   const address = config.oracleAddress;
 
+  if (isTerminal(market.questionId)) return;
   if (await hasAlreadyReported(clients, market.questionId)) return;
 
   let price;
   try {
     price = await traceSpan(
       "reporter.fetch_price",
-      () => fetchScaledPrice(market.productCode, bound),
+      () => getPrice(market.productCode),
       { productCode: market.productCode },
     );
   } catch (err) {
@@ -399,6 +402,15 @@ async function submitReportForMarket(
         } as never);
       } catch (err) {
         const message = (err as Error).message ?? String(err);
+        const terminal = terminalRevertName(decodedRevertName(err), message);
+        if (terminal) {
+          if (markTerminal(market.questionId)) {
+            console.warn(
+              `[reporter] ${market.productCode} (${market.questionId}) can no longer be reported (${terminal}); skipping it from now on`,
+            );
+          }
+          return null;
+        }
         const classification = classifyRevert(err, message);
         if (classification === "routine") {
           console.log(`[reporter] skipped ${market.productCode} (${market.questionId}): ${message.split('\n')[0]}`);
@@ -498,9 +510,16 @@ async function runCycle(): Promise<void> {
       const bound = await refreshStalenessBound();
 
       const markets = await discoverReportableMarkets();
-      for (const market of markets) {
-        await submitReportForMarket(clients, market, bound);
-      }
+      // Same bound and one price lookup per product for the whole cycle.
+      const getPrice = createPriceCache((productCode) => fetchScaledPrice(productCode, bound));
+      await forEachIsolated(
+        markets,
+        (market) => submitReportForMarket(clients, market, bound, getPrice),
+        (market, err) =>
+          console.error(
+            `[reporter] market ${market.productCode} (${market.questionId}) failed, continuing: ${(err as Error).message?.split("\n")[0]}`,
+          ),
+      );
       
       consecutiveRpcFailures = 0; // reset on success
     });
