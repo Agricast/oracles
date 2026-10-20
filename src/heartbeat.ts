@@ -1,16 +1,16 @@
 import { writeFileSync } from "node:fs";
 
-/** File the container HEALTHCHECK looks at. Override with HEARTBEAT_FILE. */
-export const DEFAULT_HEARTBEAT_FILE = "/tmp/reporter-heartbeat";
-
 /**
- * Touch the heartbeat file. Called after a cycle completes without throwing, so
- * its mtime is "last time the loop got through a full cycle". Never throws: a
- * read-only /tmp must not take a working reporter down.
+ * Touch the heartbeat file named by HEARTBEAT_FILE (the Dockerfile sets it for the
+ * container HEALTHCHECK). Unset means no heartbeat, so local runs write nothing.
+ * Called after a cycle completes without throwing, so its mtime is "last time
+ * the loop got through a full cycle". Never throws: an unwritable path must not
+ * take a working reporter down.
  */
-export function writeHeartbeat(path: string = process.env.HEARTBEAT_FILE || DEFAULT_HEARTBEAT_FILE): void {
+export function writeHeartbeat(path: string | undefined = process.env.HEARTBEAT_FILE): void {
+  if (!path) return;
   try {
-    writeFileSync(path, `${Date.now()}\n`);
+    writeFileSync(path, `${Date.now()}\n`, { mode: 0o600 });
   } catch (err) {
     console.warn(`[heartbeat] could not write ${path}: ${(err as Error).message}`);
   }
