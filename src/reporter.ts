@@ -7,6 +7,7 @@ import { SIGNED_PRICE_TYPES, AGRI_ORACLE_DOMAIN } from "./abi/domain.js";
 import { refreshStalenessBound, describeStalenessBound, type StalenessBound } from "./staleness.js";
 import { createPriceCache, forEachIsolated, isTerminal, markTerminal, terminalRevertName } from "./cycle-state.js";
 import { traceSpan, recordCycleDuration, incrementReportsSubmitted, shutdownOtel } from "./otel-init.js";
+import { writeHeartbeat } from "./heartbeat.js";
 import { hasPendingTx, waitForDrain } from "./shutdown.js";
 
 // On top of stake + registration fee, require this much extra balance before
@@ -563,6 +564,7 @@ async function runCycle(): Promise<void> {
       
       consecutiveRpcFailures = 0; // reset on success
     });
+    writeHeartbeat();
   } catch (err) {
     const msg = (err as Error).message;
     console.error("[reporter] cycle error:", msg);
