@@ -592,7 +592,9 @@ let currentCycle: Promise<void> = Promise.resolve();
 let stopping = false;
 
 function tick(): void {
-  if (stopping) return;
+  // While a cycle is in flight, runCycle() would return an instant no-op
+  // promise; assigning it would hide the real cycle from the SIGTERM drain.
+  if (stopping || cycleRunning) return;
   currentCycle = runCycle();
 }
 

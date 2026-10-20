@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
+  TERMINAL_TTL_MS,
   createPriceCache,
   forEachIsolated,
   isTerminal,
@@ -37,6 +38,18 @@ describe("forEachIsolated", () => {
     ).rejects.toThrow("boom 1");
   });
 
+  test("a single failing market is not rethrown", async () => {
+    const errors: number[] = [];
+    await forEachIsolated(
+      [1],
+      async () => {
+        throw new Error("unknown revert");
+      },
+      (n) => errors.push(n),
+    );
+    expect(errors).toEqual([1]);
+  });
+
   test("an empty list is not a failure", async () => {
     await forEachIsolated([], async () => {}, () => {});
   });
@@ -50,6 +63,14 @@ describe("terminal questions", () => {
     expect(markTerminal("0xAB")).toBe(true);
     expect(markTerminal("0xab")).toBe(false);
     expect(isTerminal("0xAB")).toBe(true);
+  });
+
+  test("terminal mark expires after the TTL", () => {
+    const t0 = 1_000_000;
+    markTerminal("0xcd", t0);
+    expect(isTerminal("0xcd", t0 + TERMINAL_TTL_MS - 1)).toBe(true);
+    expect(isTerminal("0xcd", t0 + TERMINAL_TTL_MS)).toBe(false);
+    expect(markTerminal("0xcd", t0 + TERMINAL_TTL_MS)).toBe(true);
   });
 
   test("decoded name wins, message is the fallback", () => {

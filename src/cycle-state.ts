@@ -1,20 +1,31 @@
 // Small helpers for the polling cycle in reporter.ts, kept free of viem/OTel
 // imports so they can be unit-tested directly.
 
-// Questions where the chain has said no report can ever land (failed quorum,
+// Questions where the chain has said no report can land (failed quorum,
 // closed or expired window). Re-reading, re-scraping and re-signing these
-// every poll just reverts again, so they are skipped for the life of the process.
-const terminalQuestions = new Set<string>();
+// every poll just reverts again, so they are skipped. The mark expires after
+// TERMINAL_TTL_MS: the "window closed" names are not proven to be final (a
+// market might revert them before its window opens), and expiry also keeps
+// the set from growing for the life of the process.
+export const TERMINAL_TTL_MS = 60 * 60 * 1000;
+const terminalQuestions = new Map<string, number>();
 
-export function markTerminal(questionId: string): boolean {
+export function markTerminal(questionId: string, now = Date.now()): boolean {
   const key = questionId.toLowerCase();
-  const isNew = !terminalQuestions.has(key);
-  terminalQuestions.add(key);
+  const isNew = !isTerminal(key, now);
+  terminalQuestions.set(key, now + TERMINAL_TTL_MS);
   return isNew;
 }
 
-export function isTerminal(questionId: string): boolean {
-  return terminalQuestions.has(questionId.toLowerCase());
+export function isTerminal(questionId: string, now = Date.now()): boolean {
+  const key = questionId.toLowerCase();
+  const expiresAt = terminalQuestions.get(key);
+  if (expiresAt === undefined) return false;
+  if (expiresAt <= now) {
+    terminalQuestions.delete(key);
+    return false;
+  }
+  return true;
 }
 
 export function resetTerminalQuestions(): void {
@@ -55,8 +66,10 @@ export function createPriceCache<T>(fetcher: (productCode: string) => Promise<T>
 
 /**
  * Runs `handle` for every item; one item throwing does not stop the rest.
- * If every item failed (a sign the RPC or feed is down rather than one bad
- * market) the first error is rethrown so the caller's cycle backoff applies.
+ * If every item failed and there were at least two (a sign the RPC or feed is
+ * down rather than one bad market) the first error is rethrown so the caller's
+ * cycle backoff applies. A single failing market is just logged: it is not
+ * evidence about the dependencies.
  */
 export async function forEachIsolated<T>(
   items: readonly T[],
@@ -74,5 +87,5 @@ export async function forEachIsolated<T>(
       onError(item, err);
     }
   }
-  if (items.length > 0 && failed === items.length) throw firstErr;
+  if (items.length > 1 && failed === items.length) throw firstErr;
 }
