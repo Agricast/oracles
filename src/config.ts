@@ -97,7 +97,7 @@ function resolveOracleAddress(network: NetworkName, chainId: number): Address {
  * viem's own defaults are retryCount 3 at a flat retryDelay of 150ms against a
  * 10s timeout - under half a second of cover for an RPC that stalls for ten.
  * That is what the reporter kept hitting in production: 19 `eth_blockNumber`
- * timeouts against rpc-agricast in 30 days, each one failing a whole cycle.
+ * timeouts against the RPC in 30 days, each one failing a whole cycle.
  * Widen the cover so a stall has to persist before it takes a cycle down.
  *
  * All three overridable, because the right numbers depend on the RPC behind

@@ -199,6 +199,13 @@ function patchConsole(): void {
   }
 }
 
+let providersShutdown: (() => Promise<void>) | null = null;
+
+/** Flushes and closes the OTel providers. No-op when OTel is off. */
+export async function shutdownOtel(): Promise<void> {
+  await providersShutdown?.();
+}
+
 function initOtel(): void {
   if (!isOtelEnabled()) return;
 
@@ -272,15 +279,13 @@ function initOtel(): void {
 
   patchConsole();
 
-  for (const signal of ["SIGTERM", "SIGINT"] as const) {
-    process.once(signal, () => {
-      void Promise.allSettled([
-        tracerProvider.shutdown(),
-        loggerProvider.shutdown(),
-        meterProvider.shutdown(),
-      ]);
-    });
-  }
+  // No signal handler here: the reporter drains its in-flight cycle first and
+  // then calls shutdownOtel(), so the last cycle's spans and logs are not
+  // flushed away from under it.
+  providersShutdown = () =>
+    Promise.allSettled([tracerProvider.shutdown(), loggerProvider.shutdown(), meterProvider.shutdown()]).then(
+      () => undefined,
+    );
 
   console.log(`[otel] traces+logs+metrics enabled -> ${base} (service=${SERVICE_NAME})`);
 }

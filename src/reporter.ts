@@ -6,7 +6,8 @@ import { discoverReportableMarkets, type ReportableMarket } from "./markets.js";
 import { SIGNED_PRICE_TYPES, AGRI_ORACLE_DOMAIN } from "./abi/domain.js";
 import { refreshStalenessBound, describeStalenessBound, type StalenessBound } from "./staleness.js";
 import { createPriceCache, forEachIsolated, isTerminal, markTerminal, terminalRevertName } from "./cycle-state.js";
-import { traceSpan, recordCycleDuration, incrementReportsSubmitted } from "./otel-init.js";
+import { traceSpan, recordCycleDuration, incrementReportsSubmitted, shutdownOtel } from "./otel-init.js";
+import { hasPendingTx, waitForDrain } from "./shutdown.js";
 
 // On top of stake + registration fee, require this much extra balance before
 // AUTO_ENROLL registers - leaves room for the registerReporter gas cost itself.
@@ -105,7 +106,7 @@ async function hasAlreadyReported(
   return reporters.some((r) => r.toLowerCase() === me);
 }
 
-// Unlike ensureEnrolled's one-shot registration, ensureActive re-checks
+// ensureActive re-checks
 // stake every poll cycle - so a failed/skipped top-up (insufficient
 // balance, a reverted tx) would otherwise retry immediately next cycle
 // forever, spamming identical warnings and a doomed addStake gas estimate
@@ -166,6 +167,11 @@ async function ensureActive(clients: Awaited<ReturnType<typeof getOracleClients>
   }
   lastTopupAttemptAt = now;
 
+  if (await hasPendingTx(publicClient, account.address)) {
+    console.warn("[reporter] AUTO_TOPUP: a transaction from this account is still pending - not sending another top-up");
+    return false;
+  }
+
   const balance = await publicClient.getBalance({ address: account.address });
   if (balance < topUpAmount) {
     console.warn(
@@ -192,22 +198,35 @@ async function ensureActive(clients: Awaited<ReturnType<typeof getOracleClients>
   return true;
 }
 
+const ENROLL_ATTEMPT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+let lastEnrollAttemptAt = 0;
+let loggedActive = false;
+
 /**
  * Opt-in self-registration for AUTO_ENROLL=true nodes - e.g. a docker-compose demo
- * running a 4th reporter that should come up already staked. Runs once at startup,
- * after the abi-drift-guard domain-separator check (so we never sign/spend against a
- * stale ABI) and before the poll loop starts. No-op when AUTO_ENROLL is unset, which
- * keeps the public-node default manual (`cli register`).
+ * running a reporter that should come up already staked. Runs every cycle (after the
+ * abi-drift-guard domain-separator check inside getOracleClients), so a chain
+ * redeploy or a slash recovers without a restart. No-op when AUTO_ENROLL is unset,
+ * which keeps the public-node default manual (`cli register`).
+ *
+ * Never exits the process: an underfunded wallet or a reverted transaction logs a
+ * warning and is retried after ENROLL_ATTEMPT_COOLDOWN_MS, because exiting under
+ * `restart: unless-stopped` just turns it into a restart loop.
  *
  * - Not registered: registers with AUTO_ENROLL_STAKE (falling back to on-chain
  *   MIN_STAKE if unset or too low) + REGISTRATION_FEE, but only if the wallet can
- *   cover that plus a gas buffer - an underfunded node exits rather than looping
- *   unregistered.
+ *   cover that plus a gas buffer.
  * - Registered but under ACTIVE_THRESHOLD (e.g. after a slash): tops up to the
  *   threshold so it can actually submit reports.
- * - Registered and active: logs and returns.
+ * - Registered and active: nothing to do.
+ * - A transaction from this account still pending: no new transaction is sent.
+ *
+ * `now` is a parameter so the cooldown can be tested.
  */
-async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClients>>): Promise<void> {
+export async function ensureEnrolled(
+  clients: Awaited<ReturnType<typeof getOracleClients>>,
+  now: number = Date.now(),
+): Promise<void> {
   const { publicClient, walletClient, account, config } = clients;
   if (!config.autoEnroll) return;
   const address = config.oracleAddress;
@@ -224,6 +243,29 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
     abi: AgriOracleAbi,
     functionName: "MIN_STAKE",
   })) as bigint;
+
+  const activeThreshold = (await publicClient.readContract({
+    address,
+    abi: AgriOracleAbi,
+    functionName: "ACTIVE_THRESHOLD",
+  })) as bigint;
+
+  if (registered && stake >= activeThreshold) {
+    if (!loggedActive) {
+      console.log(`[reporter] AUTO_ENROLL: already registered and active (stake ${formatEther(stake)} ETH)`);
+      loggedActive = true;
+    }
+    return;
+  }
+  loggedActive = false;
+
+  if (now - lastEnrollAttemptAt < ENROLL_ATTEMPT_COOLDOWN_MS) return;
+  lastEnrollAttemptAt = now;
+
+  if (await hasPendingTx(publicClient, account.address)) {
+    console.warn("[reporter] AUTO_ENROLL: a transaction from this account is still pending - not sending another");
+    return;
+  }
 
   if (!registered) {
     const registrationFee = (await publicClient.readContract({
@@ -256,12 +298,12 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
     );
 
     if (balance < required) {
-      console.error(
+      console.warn(
         `[reporter] AUTO_ENROLL: wallet balance ${formatEther(balance)} ETH is below the required ` +
-          `${formatEther(required)} ETH (stake + registration fee + gas buffer) - refusing to ` +
-          "register underfunded and exiting rather than looping unregistered",
+          `${formatEther(required)} ETH (stake + registration fee + gas buffer) - not registering, ` +
+          `will retry in ${ENROLL_ATTEMPT_COOLDOWN_MS / 60_000}min`,
       );
-      process.exit(1);
+      return;
     }
 
     const hash = await walletClient.writeContract({
@@ -274,25 +316,22 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
     } as never);
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") {
-      console.error(`[reporter] AUTO_ENROLL: registerReporter reverted (${hash}) - exiting`);
-      process.exit(1);
+      console.error(`[reporter] AUTO_ENROLL: registerReporter reverted (${hash}) - will retry`);
+      return;
     }
     console.log(`[reporter] AUTO_ENROLL: registered (tx ${hash})`);
     return;
   }
 
-  const activeThreshold = (await publicClient.readContract({
-    address,
-    abi: AgriOracleAbi,
-    functionName: "ACTIVE_THRESHOLD",
-  })) as bigint;
-
-  if (stake >= activeThreshold) {
-    console.log(`[reporter] AUTO_ENROLL: already registered and active (stake ${formatEther(stake)} ETH)`);
+  const topUp = activeThreshold - stake;
+  const topUpBalance = await publicClient.getBalance({ address: account.address });
+  if (topUpBalance < topUp + AUTO_ENROLL_GAS_BUFFER) {
+    console.warn(
+      `[reporter] AUTO_ENROLL: need ${formatEther(topUp)} ETH (plus gas) to reach ACTIVE_THRESHOLD but wallet ` +
+        `only has ${formatEther(topUpBalance)} ETH - will retry in ${ENROLL_ATTEMPT_COOLDOWN_MS / 60_000}min`,
+    );
     return;
   }
-
-  const topUp = activeThreshold - stake;
   console.log(
     `[reporter] AUTO_ENROLL: registered but stake ${formatEther(stake)} ETH is below ACTIVE_THRESHOLD ` +
       `(${formatEther(activeThreshold)} ETH) - adding ${formatEther(topUp)} ETH`,
@@ -307,8 +346,8 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
   } as never);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") {
-    console.error(`[reporter] AUTO_ENROLL: addStake top-up reverted (${hash}) - exiting`);
-    process.exit(1);
+    console.error(`[reporter] AUTO_ENROLL: addStake top-up reverted (${hash}) - will retry`);
+    return;
   }
   console.log(`[reporter] AUTO_ENROLL: stake topped up to active threshold (tx ${hash})`);
 }
@@ -497,6 +536,7 @@ async function runCycle(): Promise<void> {
       // Quick health check to prevent hammering if RPC is down
       await clients.publicClient.getBlockNumber();
 
+      await ensureEnrolled(clients);
       if (!(await ensureActive(clients))) return;
 
       // Re-read the on-chain MAX_SOURCE_DATE_AGE every cycle. It is about to
@@ -542,21 +582,49 @@ async function runCycle(): Promise<void> {
   }
 }
 
+// Cycles get this long to finish after SIGTERM. The container grace period is
+// 40s; the rest is left for the OTel flush and the exit itself.
+const SHUTDOWN_DRAIN_MS = 30_000;
+const OTEL_FLUSH_MS = 5_000;
+
+let timer: ReturnType<typeof setInterval> | undefined;
+let currentCycle: Promise<void> = Promise.resolve();
+let stopping = false;
+
+function tick(): void {
+  if (stopping) return;
+  currentCycle = runCycle();
+}
+
+async function shutdown(signal: string): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  clearInterval(timer);
+  console.log(`[reporter] ${signal} received - waiting up to ${SHUTDOWN_DRAIN_MS / 1000}s for the current cycle`);
+  const result = await waitForDrain(currentCycle, SHUTDOWN_DRAIN_MS);
+  if (result === "timeout") console.warn("[reporter] current cycle did not finish in time - exiting anyway");
+  await waitForDrain(shutdownOtel(), OTEL_FLUSH_MS);
+  process.exit(result === "drained" ? 0 : 1);
+}
+
 export async function startReporterLoop(): Promise<void> {
   const config = loadConfig();
   console.log(`[reporter] starting - polling every ${config.pollIntervalMs / 1000}s`);
   console.log(`[reporter] network=${config.network} chainId=${config.chainId} oracle=${config.oracleAddress}`);
 
   // Runs the abi-drift-guard domain-separator check before anything else.
-  const clients = await getOracleClients();
-  await ensureEnrolled(clients);
+  await getOracleClients();
 
   // Surface the resolved staleness window at startup, so "why is it skipping"
   // is answerable from the first log lines instead of guessed at.
   console.log(`[reporter] staleness: ${describeStalenessBound(await refreshStalenessBound())}`);
 
-  void runCycle();
-  setInterval(() => void runCycle(), config.pollIntervalMs);
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.once(signal, () => void shutdown(signal));
+  }
+
+  tick();
+  timer = setInterval(tick, config.pollIntervalMs);
 }
 
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
