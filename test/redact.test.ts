@@ -46,4 +46,24 @@ describe("stripUrls", () => {
     }
     expect(stripUrls(viemMessage)).toContain("URL: https://rpc.example.com");
   });
+
+  test("key path segment, JSON-escaped and percent-encoded forms are scrubbed", () => {
+    const KEY = "AbCdEf0123456789SECRETkey";
+    registerSecretUrl(`https://eth-sepolia.g.alchemy.com/v2/${KEY}`);
+    for (const msg of [
+      `Must be authenticated! key ${KEY} is invalid`,
+      `{"url":"https:\\/\\/eth-sepolia.g.alchemy.com\\/v2\\/${KEY}"}`,
+      `eth-sepolia.g.alchemy.com/v2/${KEY}`,
+      `https%3A%2F%2Feth-sepolia.g.alchemy.com%2Fv2%2F${KEY}`,
+    ]) {
+      expect(stripUrls(msg)).not.toContain(KEY);
+    }
+  });
+
+  test("short generic path segments are not registered, so hostnames survive", () => {
+    registerSecretUrl("https://rpc.example.com/rpc?apikey=QUERYKEY456");
+    expect(stripUrls("connect to rpc.example.com failed")).toBe("connect to rpc.example.com failed");
+    expect(stripUrls("fallback https://other.example/rpc/v1 down")).toBe("fallback https://other.example down");
+    expect(stripUrls("apikey QUERYKEY456 rejected")).not.toContain("QUERYKEY456");
+  });
 });

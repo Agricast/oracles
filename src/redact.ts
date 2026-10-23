@@ -14,6 +14,7 @@ export function redactUrl(url: string): string {
 // Literal strings to scrub from every message, longest first, each with what
 // replaces it. Filled from the configured RPC URL by registerSecretUrl().
 let secrets: Array<[string, string]> = [];
+const MIN_SECRET_PIECE = 8;
 
 /**
  * Remembers a URL whose path, query and userinfo must never be logged, so
@@ -29,6 +30,8 @@ export function registerSecretUrl(url: string): void {
   }
   const parts = new Set<string>();
   if (u.pathname.length > 1) parts.add(u.pathname);
+  // A key in the path shows up on its own too ("key <KEY> is invalid").
+  for (const segment of u.pathname.split("/")) parts.add(segment);
   if (u.search.length > 1) parts.add(u.search.slice(1));
   for (const value of u.searchParams.values()) parts.add(value);
   if (u.username) parts.add(u.username);
@@ -40,9 +43,19 @@ export function registerSecretUrl(url: string): void {
       // not percent-encoded, nothing to add
     }
   }
-  const next: Array<[string, string]> = [[url, redactUrl(url)]];
-  // Short fragments ("v2", "1") would shred unrelated text; key material is longer.
-  for (const p of parts) if (p.length >= 4) next.push([p, "<redacted>"]);
+  const host = redactUrl(url);
+  // The whole URL as it appears in JSON ("https:\/\/...") and percent-encoded
+  // (upper- and lower-case escapes), each replaced by the same encoding of the host.
+  const encoded = encodeURIComponent(url);
+  const next: Array<[string, string]> = [
+    [url, host],
+    [url.replaceAll("/", "\\/"), host.replaceAll("/", "\\/")],
+    [encoded, encodeURIComponent(host)],
+    [encoded.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()), encodeURIComponent(host)],
+  ];
+  // Short pieces ("/rpc", "v2", a username like "user") would shred hostnames
+  // and ordinary words; key material is longer than this.
+  for (const p of parts) if (p.length >= MIN_SECRET_PIECE) next.push([p, "<redacted>"]);
   secrets = [...secrets, ...next].sort((a, b) => b[0].length - a[0].length);
 }
 

@@ -183,6 +183,7 @@ async function ensureActive(clients: Awaited<ReturnType<typeof getOracleClients>
     return false;
   }
 
+  if (stopping) return false; // no new transaction once shutdown has begun
   console.log(`[reporter] AUTO_TOPUP: stake fell to ${stake} wei, adding ${topUpAmount} wei`);
   const hash = await walletClient.writeContract({
     address,
@@ -308,6 +309,7 @@ export async function ensureEnrolled(
       return;
     }
 
+    if (stopping) return; // no new transaction once shutdown has begun
     const hash = await walletClient.writeContract({
       address,
       abi: AgriOracleAbi,
@@ -334,6 +336,7 @@ export async function ensureEnrolled(
     );
     return;
   }
+  if (stopping) return;
   console.log(
     `[reporter] AUTO_ENROLL: registered but stake ${formatEther(stake)} ETH is below ACTIVE_THRESHOLD ` +
       `(${formatEther(activeThreshold)} ETH) - adding ${formatEther(topUp)} ETH`,
@@ -359,7 +362,7 @@ async function submitReportForMarket(
   market: ReportableMarket,
   bound: StalenessBound,
   getPrice: (productCode: string) => Promise<ScaledPrice>,
-): Promise<void> {
+): Promise<"pending-tx" | void> {
   const { publicClient, walletClient, account, config } = clients;
   const address = config.oracleAddress;
 
@@ -372,7 +375,7 @@ async function submitReportForMarket(
     console.warn(
       `[reporter] skipping ${market.productCode} (${market.questionId}): a transaction from this account is still pending`,
     );
-    return;
+    return "pending-tx";
   }
 
   let price;
@@ -405,6 +408,13 @@ async function submitReportForMarket(
     abi: AgriOracleAbi,
     functionName: "REPORT_BOND",
   })) as bigint;
+
+  // SIGTERM can land during the price fetch above (a Chromium scrape, seconds
+  // long). The per-market check in forEachIsolated already passed by then.
+  if (stopping) {
+    console.log(`[reporter] shutting down - not submitting ${market.productCode} (${market.questionId})`);
+    return;
+  }
 
   const expiryTime = BigInt(Math.floor(Date.now() / 1000) + 3600); // 1 hour
 
@@ -565,9 +575,14 @@ async function runCycle(): Promise<void> {
       const markets = await discoverReportableMarkets();
       // Same bound and one price lookup per product for the whole cycle.
       const getPrice = createPriceCache((productCode) => fetchScaledPrice(productCode, bound));
+      let attempted = 0;
+      let skippedForPending = 0;
       await forEachIsolated(
         markets,
-        (market) => submitReportForMarket(clients, market, bound, getPrice),
+        async (market) => {
+          attempted++;
+          if ((await submitReportForMarket(clients, market, bound, getPrice)) === "pending-tx") skippedForPending++;
+        },
         (market, err) =>
           console.error(
             `[reporter] market ${market.productCode} (${market.questionId}) failed, continuing: ${stripUrls(String((err as Error).message)).split("\n")[0]}`,
@@ -576,6 +591,22 @@ async function runCycle(): Promise<void> {
       );
       
       consecutiveRpcFailures = 0; // reset on success
+
+      // A tx stuck in the mempool (e.g. underpriced) blocks every market every
+      // cycle. Nothing is reported, so do not look healthy. No automatic
+      // replacement tx: picking a fee and racing the original is for an operator.
+      if (attempted > 0 && skippedForPending === attempted) {
+        const nonce = await clients.publicClient.getTransactionCount({
+          address: clients.account.address,
+          blockTag: "latest",
+        });
+        console.error(
+          `[reporter] ALERT: every market skipped - transaction with nonce ${nonce} from ` +
+            `${clients.account.address} looks stuck in the mempool. No reports until it is mined or ` +
+            "replaced (send a same-nonce tx with a higher fee); heartbeat not written.",
+        );
+        return false;
+      }
       return true;
     });
     // Only a cycle that got through its markets counts as alive, even if some

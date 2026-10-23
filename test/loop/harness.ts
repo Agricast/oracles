@@ -11,6 +11,8 @@ export const ctl: any = {
   pendingNonce: 0,
   latestNonce: 0,
   failMarkets: false,
+  priceDelay: 0,
+  blockDelay: 0,
   receiptResolvers: [] as Array<() => void>,
   cyclesStarted: 0,
   writes: 0,
@@ -38,12 +40,18 @@ export const clients: any = {
   account: { address: "0x00000000000000000000000000000000000000aa", signTypedData: async () => "0xsig" },
   config: { oracleAddress: "0x0000000000000000000000000000000000000001", chainId: 1, autoEnroll: false, autoTopup: false },
   publicClient: {
-    getBlockNumber: async () => 1n,
+    getBlockNumber: async () => {
+      if (ctl.blockDelay) await new Promise((r) => setTimeout(r, ctl.blockDelay));
+      return 1n;
+    },
+    getBalance: async () => 10n ** 21n,
     getTransactionCount: async ({ blockTag }: { blockTag: string }) =>
       blockTag === "pending" ? ctl.pendingNonce : ctl.latestNonce,
     readContract: async ({ functionName }: { functionName: string }) => {
       if (functionName === "getReporterInfo") return [ctl.registered, 10n, 0n, 0n, 0n];
       if (functionName === "ACTIVE_THRESHOLD") return 1n;
+      if (functionName === "MIN_STAKE") return 1n;
+      if (functionName === "REGISTRATION_FEE") return 1n;
       if (functionName === "getQuestionReporters") {
         if (ctl.failMarkets) throw new Error("market read failed");
         return [];
@@ -85,7 +93,10 @@ mock.module(SRC + "markets.ts", () => ({
   },
 }));
 mock.module(SRC + "price-source.ts", () => ({
-  fetchScaledPrice: async () => ({ priceMin: 1n, priceMax: 2n, sourceDate: 1n }),
+  fetchScaledPrice: async () => {
+    if (ctl.priceDelay) await new Promise((r) => setTimeout(r, ctl.priceDelay));
+    return { priceMin: 1n, priceMax: 2n, sourceDate: 1n };
+  },
   StalePriceError: class extends Error {},
   ImplausiblePriceError: class extends Error {},
 }));

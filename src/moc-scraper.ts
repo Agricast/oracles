@@ -162,6 +162,32 @@ function parseDownloadedCsv(content: string): MocPriceRecord[] {
   return records;
 }
 
+// What Chromium may see of this process's environment. It renders untrusted
+// remote content, and REPORTER_PRIVATE_KEY / RPC_URL live in the same env, so
+// pass an allowlist instead of inheriting everything.
+const CHROMIUM_ENV_KEYS = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "LANG",
+  "LC_ALL",
+  "TZ",
+  "XDG_RUNTIME_DIR",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "FONTCONFIG_PATH",
+  "PLAYWRIGHT_BROWSERS_PATH",
+] as const;
+
+export function chromiumEnv(env: Record<string, string | undefined> = process.env): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const key of CHROMIUM_ENV_KEYS) {
+    const value = env[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
 async function scrapeOnce(productCode: string): Promise<MocQuote> {
   assertValidProductCode(productCode);
 
@@ -177,6 +203,7 @@ async function scrapeOnce(productCode: string): Promise<MocQuote> {
 
   const browser = await chromium.launch({
     headless: true,
+    env: chromiumEnv(),
     args: [
       "--disable-blink-features=AutomationControlled",
       "--disable-dev-shm-usage",
