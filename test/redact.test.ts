@@ -170,3 +170,28 @@ describe("stray closing bracket", () => {
     expect(stripUrls("(see https://a.example/p)")).toBe("(see https://a.example)");
   });
 });
+
+describe("outer closers and escape case", () => {
+  test("only closers matched by an opener inside the URL are dropped", () => {
+    registerSecretUrl("https://rpc.example.com/v2/SECRETKEY123");
+    expect(stripUrls("<https://rpc.example.com/v2/<abc>>")).toBe("<https://rpc.example.com>");
+    expect(stripUrls("(https://other.io/(a))")).toBe("(https://other.io)");
+    expect(stripUrls("[x](https://other.io/a_(b))")).toBe("[x](https://other.io)");
+    expect(stripUrls('{"u":"https://other.io/a{b}"}')).toBe('{"u":"https://other.io"}');
+  });
+
+  test("escapes match whatever the hex case", () => {
+    registerSecretUrl("https://rpc.example.com/v2?key=ab%2fcd%2Bef");
+    for (const s of ["ab%2Fcd%2bef", "ab%2fcd%2Bef", "ab%2Fcd%2Bef", "ab%2fcd%2bef"]) {
+      expect(stripUrls(`x ${s} y`)).not.toContain("cd");
+    }
+  });
+
+  test("encodeURI and URLSearchParams spellings are scrubbed", () => {
+    const value = "k3y(x)!'~*1";
+    registerSecretUrl(`https://rpc.example.com/v2?key=${encodeURIComponent(value)}`);
+    for (const s of [value, encodeURI(value), new URLSearchParams({ k: value }).toString().slice(2)]) {
+      expect(stripUrls(`x ${s} y`)).not.toContain("k3y");
+    }
+  });
+});

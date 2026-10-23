@@ -69,10 +69,8 @@ export function registerSecretUrl(url: string): void {
   for (const p of [...credentialParts]) {
     for (const v of [p, p.replaceAll("+", " "), p.replaceAll(" ", "+")]) {
       const escaped = encodeURIComponent(v);
-      for (const form of [v, escaped, escaped.replaceAll("%20", "+")]) {
-        credentialParts.add(form);
-        credentialParts.add(form.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()));
-      }
+      const forms = [v, escaped, escaped.replaceAll("%20", "+"), encodeURI(v), new URLSearchParams({ k: v }).toString().slice(2)];
+      for (const form of forms) credentialParts.add(form);
     }
   }
   const host = redactUrl(url);
@@ -83,7 +81,6 @@ export function registerSecretUrl(url: string): void {
     [url, host],
     [url.replaceAll("/", "\\/"), host.replaceAll("/", "\\/")],
     [encoded, encodeURIComponent(host)],
-    [encoded.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()), encodeURIComponent(host)],
   ];
   // A piece inside the scheme or host would be replaced inside the redacted
   // "https://host" stripUrls() leaves behind, breaking it (and, if run first,
@@ -91,7 +88,9 @@ export function registerSecretUrl(url: string): void {
   const keep = (p: string) => !host.includes(p) && !SCHEME_WORDS.has(p.toLowerCase());
   for (const p of pathParts) if (p.length >= MIN_PATH_PIECE && keep(p)) next.push([p, "<redacted>"]);
   for (const p of credentialParts) if (p.length >= MIN_CREDENTIAL_PIECE && keep(p)) next.push([p, "<redacted>"]);
-  secrets = [...secrets, ...next].sort((a, b) => b[0].length - a[0].length);
+  // Escapes are matched case-insensitively by upper-casing them on both sides.
+  const normalized = next.map(([k, r]): [string, string] => [upperEscapes(k), r]);
+  secrets = [...secrets, ...normalized].sort((a, b) => b[0].length - a[0].length);
 }
 
 /** For tests. */
@@ -104,11 +103,12 @@ export function resetSecretUrls(): void {
 const TRAILING = /["'<>)\]},;.]+$/;
 const CLOSERS: Record<string, string> = { ">": "<", ")": "(", "]": "[", "}": "{" };
 const INVALID_URL = "<invalid url>";
+const upperEscapes = (text: string) => text.replace(/%[0-9a-f]{2}/gi, (m) => m.toUpperCase());
 const count = (text: string, ch: string) => text.split(ch).length - 1;
 
 /** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
 export function scrubSecrets(message: string, onlyWithWhitespace = false): string {
-  let out = message;
+  let out = secrets.length ? upperEscapes(message) : message;
   for (const [secret, replacement] of secrets) {
     if (onlyWithWhitespace && !/\s/.test(secret)) continue;
     out = out.split(secret).join(replacement);
@@ -134,9 +134,13 @@ export function stripUrls(message: string): string {
     // A closer whose opener sat inside the removed path ("/v2/<KEY>") has
     // nothing to close any more, and after "<invalid url>" a ">" is noise.
     let kept = "";
+    const dropped: Record<string, number> = {};
     for (const ch of tail) {
       const opener = CLOSERS[ch];
-      if (opener && (host === INVALID_URL ? ch === ">" : count(body, opener) > count(kept, ch) + count(body, ch))) continue;
+      if (opener && (host === INVALID_URL ? ch === ">" : count(body, opener) > (dropped[ch] ?? 0) + count(body, ch))) {
+        dropped[ch] = (dropped[ch] ?? 0) + 1;
+        continue;
+      }
       kept += ch;
     }
     return host + kept;
