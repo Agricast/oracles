@@ -1,11 +1,15 @@
 import { formatEther, parseEther, BaseError, ContractFunctionRevertedError } from "viem";
 import { getOracleClients, AgriOracleAbi } from "./oracle.js";
 import { loadConfig } from "./config.js";
-import { fetchScaledPrice, ImplausiblePriceError, StalePriceError } from "./price-source.js";
+import { fetchScaledPrice, ImplausiblePriceError, StalePriceError, type ScaledPrice } from "./price-source.js";
 import { discoverReportableMarkets, type ReportableMarket } from "./markets.js";
 import { SIGNED_PRICE_TYPES, AGRI_ORACLE_DOMAIN } from "./abi/domain.js";
 import { refreshStalenessBound, describeStalenessBound, type StalenessBound } from "./staleness.js";
-import { traceSpan, recordCycleDuration, incrementReportsSubmitted } from "./otel-init.js";
+import { createPriceCache, forEachIsolated, isTerminal, markTerminal, terminalRevertName } from "./cycle-state.js";
+import { traceSpan, recordCycleDuration, incrementReportsSubmitted, shutdownOtel } from "./otel-init.js";
+import { writeHeartbeat } from "./heartbeat.js";
+import { hasPendingTx, waitForDrain } from "./shutdown.js";
+import { stripUrls } from "./redact.js";
 
 // On top of stake + registration fee, require this much extra balance before
 // AUTO_ENROLL registers - leaves room for the registerReporter gas cost itself.
@@ -104,7 +108,7 @@ async function hasAlreadyReported(
   return reporters.some((r) => r.toLowerCase() === me);
 }
 
-// Unlike ensureEnrolled's one-shot registration, ensureActive re-checks
+// ensureActive re-checks
 // stake every poll cycle - so a failed/skipped top-up (insufficient
 // balance, a reverted tx) would otherwise retry immediately next cycle
 // forever, spamming identical warnings and a doomed addStake gas estimate
@@ -165,6 +169,11 @@ async function ensureActive(clients: Awaited<ReturnType<typeof getOracleClients>
   }
   lastTopupAttemptAt = now;
 
+  if (await hasPendingTx(publicClient, account.address)) {
+    console.warn("[reporter] AUTO_TOPUP: a transaction from this account is still pending - not sending another top-up");
+    return false;
+  }
+
   const balance = await publicClient.getBalance({ address: account.address });
   if (balance < topUpAmount) {
     console.warn(
@@ -174,6 +183,7 @@ async function ensureActive(clients: Awaited<ReturnType<typeof getOracleClients>
     return false;
   }
 
+  if (stopping) return false; // no new transaction once shutdown has begun
   console.log(`[reporter] AUTO_TOPUP: stake fell to ${stake} wei, adding ${topUpAmount} wei`);
   const hash = await walletClient.writeContract({
     address,
@@ -191,22 +201,35 @@ async function ensureActive(clients: Awaited<ReturnType<typeof getOracleClients>
   return true;
 }
 
+const ENROLL_ATTEMPT_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+let lastEnrollAttemptAt = 0;
+let loggedActive = false;
+
 /**
  * Opt-in self-registration for AUTO_ENROLL=true nodes - e.g. a docker-compose demo
- * running a 4th reporter that should come up already staked. Runs once at startup,
- * after the abi-drift-guard domain-separator check (so we never sign/spend against a
- * stale ABI) and before the poll loop starts. No-op when AUTO_ENROLL is unset, which
- * keeps the public-node default manual (`cli register`).
+ * running a reporter that should come up already staked. Runs every cycle (after the
+ * abi-drift-guard domain-separator check inside getOracleClients), so a chain
+ * redeploy or a slash recovers without a restart. No-op when AUTO_ENROLL is unset,
+ * which keeps the public-node default manual (`cli register`).
+ *
+ * Never exits the process: an underfunded wallet or a reverted transaction logs a
+ * warning and is retried after ENROLL_ATTEMPT_COOLDOWN_MS, because exiting under
+ * `restart: unless-stopped` just turns it into a restart loop.
  *
  * - Not registered: registers with AUTO_ENROLL_STAKE (falling back to on-chain
  *   MIN_STAKE if unset or too low) + REGISTRATION_FEE, but only if the wallet can
- *   cover that plus a gas buffer - an underfunded node exits rather than looping
- *   unregistered.
+ *   cover that plus a gas buffer.
  * - Registered but under ACTIVE_THRESHOLD (e.g. after a slash): tops up to the
  *   threshold so it can actually submit reports.
- * - Registered and active: logs and returns.
+ * - Registered and active: nothing to do.
+ * - A transaction from this account still pending: no new transaction is sent.
+ *
+ * `now` is a parameter so the cooldown can be tested.
  */
-async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClients>>): Promise<void> {
+export async function ensureEnrolled(
+  clients: Awaited<ReturnType<typeof getOracleClients>>,
+  now: number = Date.now(),
+): Promise<void> {
   const { publicClient, walletClient, account, config } = clients;
   if (!config.autoEnroll) return;
   const address = config.oracleAddress;
@@ -223,6 +246,29 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
     abi: AgriOracleAbi,
     functionName: "MIN_STAKE",
   })) as bigint;
+
+  const activeThreshold = (await publicClient.readContract({
+    address,
+    abi: AgriOracleAbi,
+    functionName: "ACTIVE_THRESHOLD",
+  })) as bigint;
+
+  if (registered && stake >= activeThreshold) {
+    if (!loggedActive) {
+      console.log(`[reporter] AUTO_ENROLL: already registered and active (stake ${formatEther(stake)} ETH)`);
+      loggedActive = true;
+    }
+    return;
+  }
+  loggedActive = false;
+
+  if (now - lastEnrollAttemptAt < ENROLL_ATTEMPT_COOLDOWN_MS) return;
+  lastEnrollAttemptAt = now;
+
+  if (await hasPendingTx(publicClient, account.address)) {
+    console.warn("[reporter] AUTO_ENROLL: a transaction from this account is still pending - not sending another");
+    return;
+  }
 
   if (!registered) {
     const registrationFee = (await publicClient.readContract({
@@ -255,14 +301,15 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
     );
 
     if (balance < required) {
-      console.error(
+      console.warn(
         `[reporter] AUTO_ENROLL: wallet balance ${formatEther(balance)} ETH is below the required ` +
-          `${formatEther(required)} ETH (stake + registration fee + gas buffer) - refusing to ` +
-          "register underfunded and exiting rather than looping unregistered",
+          `${formatEther(required)} ETH (stake + registration fee + gas buffer) - not registering, ` +
+          `will retry in ${ENROLL_ATTEMPT_COOLDOWN_MS / 60_000}min`,
       );
-      process.exit(1);
+      return;
     }
 
+    if (stopping) return; // no new transaction once shutdown has begun
     const hash = await walletClient.writeContract({
       address,
       abi: AgriOracleAbi,
@@ -273,25 +320,23 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
     } as never);
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     if (receipt.status !== "success") {
-      console.error(`[reporter] AUTO_ENROLL: registerReporter reverted (${hash}) - exiting`);
-      process.exit(1);
+      console.error(`[reporter] AUTO_ENROLL: registerReporter reverted (${hash}) - will retry`);
+      return;
     }
     console.log(`[reporter] AUTO_ENROLL: registered (tx ${hash})`);
     return;
   }
 
-  const activeThreshold = (await publicClient.readContract({
-    address,
-    abi: AgriOracleAbi,
-    functionName: "ACTIVE_THRESHOLD",
-  })) as bigint;
-
-  if (stake >= activeThreshold) {
-    console.log(`[reporter] AUTO_ENROLL: already registered and active (stake ${formatEther(stake)} ETH)`);
+  const topUp = activeThreshold - stake;
+  const topUpBalance = await publicClient.getBalance({ address: account.address });
+  if (topUpBalance < topUp + AUTO_ENROLL_GAS_BUFFER) {
+    console.warn(
+      `[reporter] AUTO_ENROLL: need ${formatEther(topUp)} ETH (plus gas) to reach ACTIVE_THRESHOLD but wallet ` +
+        `only has ${formatEther(topUpBalance)} ETH - will retry in ${ENROLL_ATTEMPT_COOLDOWN_MS / 60_000}min`,
+    );
     return;
   }
-
-  const topUp = activeThreshold - stake;
+  if (stopping) return;
   console.log(
     `[reporter] AUTO_ENROLL: registered but stake ${formatEther(stake)} ETH is below ACTIVE_THRESHOLD ` +
       `(${formatEther(activeThreshold)} ETH) - adding ${formatEther(topUp)} ETH`,
@@ -306,8 +351,8 @@ async function ensureEnrolled(clients: Awaited<ReturnType<typeof getOracleClient
   } as never);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") {
-    console.error(`[reporter] AUTO_ENROLL: addStake top-up reverted (${hash}) - exiting`);
-    process.exit(1);
+    console.error(`[reporter] AUTO_ENROLL: addStake top-up reverted (${hash}) - will retry`);
+    return;
   }
   console.log(`[reporter] AUTO_ENROLL: stake topped up to active threshold (tx ${hash})`);
 }
@@ -316,17 +361,28 @@ async function submitReportForMarket(
   clients: Awaited<ReturnType<typeof getOracleClients>>,
   market: ReportableMarket,
   bound: StalenessBound,
-): Promise<void> {
+  getPrice: (productCode: string) => Promise<ScaledPrice>,
+): Promise<"pending-tx" | void> {
   const { publicClient, walletClient, account, config } = clients;
   const address = config.oracleAddress;
 
+  if (isTerminal(market.questionId)) return;
   if (await hasAlreadyReported(clients, market.questionId)) return;
+  // getQuestionReporters only sees mined reports. After a kill + restart the
+  // last submitReport can still be in the mempool, and sending another would
+  // put up a second bond for the same question.
+  if (await hasPendingTx(publicClient, account.address)) {
+    console.warn(
+      `[reporter] skipping ${market.productCode} (${market.questionId}): a transaction from this account is still pending`,
+    );
+    return "pending-tx";
+  }
 
   let price;
   try {
     price = await traceSpan(
       "reporter.fetch_price",
-      () => fetchScaledPrice(market.productCode, bound),
+      () => getPrice(market.productCode),
       { productCode: market.productCode },
     );
   } catch (err) {
@@ -352,6 +408,13 @@ async function submitReportForMarket(
     abi: AgriOracleAbi,
     functionName: "REPORT_BOND",
   })) as bigint;
+
+  // SIGTERM can land during the price fetch above (a Chromium scrape, seconds
+  // long). The per-market check in forEachIsolated already passed by then.
+  if (stopping) {
+    console.log(`[reporter] shutting down - not submitting ${market.productCode} (${market.questionId})`);
+    return;
+  }
 
   const expiryTime = BigInt(Math.floor(Date.now() / 1000) + 3600); // 1 hour
 
@@ -398,7 +461,16 @@ async function submitReportForMarket(
           account,
         } as never);
       } catch (err) {
-        const message = (err as Error).message ?? String(err);
+        const message = stripUrls((err as Error).message ?? String(err));
+        const terminal = terminalRevertName(decodedRevertName(err), message);
+        if (terminal) {
+          if (markTerminal(market.questionId)) {
+            console.warn(
+              `[reporter] ${market.productCode} (${market.questionId}) can no longer be reported (${terminal}); skipping it from now on`,
+            );
+          }
+          return null;
+        }
         const classification = classifyRevert(err, message);
         if (classification === "routine") {
           console.log(`[reporter] skipped ${market.productCode} (${market.questionId}): ${message.split('\n')[0]}`);
@@ -440,7 +512,7 @@ async function submitReportForMarket(
     console.log(`[reporter] submitted ${market.productCode} for ${market.questionId} (tx ${hash})`);
     incrementReportsSubmitted(1, { productCode: market.productCode });
   } catch (err) {
-    const message = (err as Error).message ?? String(err);
+    const message = stripUrls((err as Error).message ?? String(err));
     console.warn(`[reporter] submitReport failed for ${market.productCode} (${market.questionId}): ${message.slice(0, 200)}`);
   }
 }
@@ -479,13 +551,16 @@ async function runCycle(): Promise<void> {
   lastCycleTime = now;
   const startedAt = Date.now();
   try {
-    await traceSpan("reporter.cycle", async () => {
+    const completed = await traceSpan("reporter.cycle", async () => {
       const clients = await getOracleClients();
 
       // Quick health check to prevent hammering if RPC is down
       await clients.publicClient.getBlockNumber();
 
-      if (!(await ensureActive(clients))) return;
+      await ensureEnrolled(clients);
+      // Not registered / under stake: the loop runs but reports nothing, so it
+      // must not look healthy.
+      if (!(await ensureActive(clients))) return false;
 
       // Re-read the on-chain MAX_SOURCE_DATE_AGE every cycle. It is about to
       // become governance-settable, and an operator widening it to end an
@@ -498,14 +573,48 @@ async function runCycle(): Promise<void> {
       const bound = await refreshStalenessBound();
 
       const markets = await discoverReportableMarkets();
-      for (const market of markets) {
-        await submitReportForMarket(clients, market, bound);
-      }
+      // Same bound and one price lookup per product for the whole cycle.
+      const getPrice = createPriceCache((productCode) => fetchScaledPrice(productCode, bound));
+      let attempted = 0;
+      let skippedForPending = 0;
+      await forEachIsolated(
+        markets,
+        async (market) => {
+          attempted++;
+          if ((await submitReportForMarket(clients, market, bound, getPrice)) === "pending-tx") skippedForPending++;
+        },
+        (market, err) =>
+          console.error(
+            `[reporter] market ${market.productCode} (${market.questionId}) failed, continuing: ${stripUrls(String((err as Error).message)).split("\n")[0]}`,
+          ),
+        () => stopping,
+      );
       
       consecutiveRpcFailures = 0; // reset on success
+
+      // A tx stuck in the mempool (e.g. underpriced) blocks every market every
+      // cycle. Nothing is reported, so do not look healthy. No automatic
+      // replacement tx: picking a fee and racing the original is for an operator.
+      if (attempted > 0 && skippedForPending === attempted) {
+        const nonce = await clients.publicClient.getTransactionCount({
+          address: clients.account.address,
+          blockTag: "latest",
+        });
+        console.error(
+          `[reporter] ALERT: every market skipped - transaction with nonce ${nonce} from ` +
+            `${clients.account.address} looks stuck in the mempool. No reports until it is mined or ` +
+            "replaced (send a same-nonce tx with a higher fee); heartbeat not written.",
+        );
+        return false;
+      }
+      return true;
     });
+    // Only a cycle that got through its markets counts as alive, even if some
+    // markets failed on their own. One that threw (RPC down, every market
+    // failing) or found the reporter inactive does not.
+    if (completed) writeHeartbeat();
   } catch (err) {
-    const msg = (err as Error).message;
+    const msg = stripUrls(String((err as Error).message));
     console.error("[reporter] cycle error:", msg);
     // Back off on any cycle error by default - only the explicit allowlist
     // above skips it. The old allowlist-to-back-off (Timeout/fetch failed/
@@ -523,27 +632,63 @@ async function runCycle(): Promise<void> {
   }
 }
 
+// Cycles get this long to finish after SIGTERM. The container grace period is
+// 40s; the rest is left for the OTel flush and the exit itself.
+const SHUTDOWN_DRAIN_MS = 30_000;
+const OTEL_FLUSH_MS = 5_000;
+
+let timer: ReturnType<typeof setInterval> | undefined;
+let currentCycle: Promise<void> = Promise.resolve();
+let stopping = false;
+
+function tick(): void {
+  // While a cycle is in flight, runCycle() would return an instant no-op
+  // promise; assigning it would hide the real cycle from the SIGTERM drain.
+  if (stopping || cycleRunning) return;
+  currentCycle = runCycle();
+}
+
+async function shutdown(signal: string): Promise<void> {
+  if (stopping) {
+    console.log(`[reporter] ${signal} received again - already shutting down, still waiting for the current cycle`);
+    return;
+  }
+  stopping = true;
+  clearInterval(timer);
+  console.log(`[reporter] ${signal} received - waiting up to ${SHUTDOWN_DRAIN_MS / 1000}s for the current cycle`);
+  const result = await waitForDrain(currentCycle, SHUTDOWN_DRAIN_MS);
+  if (result === "timeout") console.warn("[reporter] current cycle did not finish in time - exiting anyway");
+  await waitForDrain(shutdownOtel(), OTEL_FLUSH_MS);
+  process.exit(result === "drained" ? 0 : 1);
+}
+
 export async function startReporterLoop(): Promise<void> {
   const config = loadConfig();
   console.log(`[reporter] starting - polling every ${config.pollIntervalMs / 1000}s`);
   console.log(`[reporter] network=${config.network} chainId=${config.chainId} oracle=${config.oracleAddress}`);
 
   // Runs the abi-drift-guard domain-separator check before anything else.
-  const clients = await getOracleClients();
-  await ensureEnrolled(clients);
+  await getOracleClients();
 
   // Surface the resolved staleness window at startup, so "why is it skipping"
   // is answerable from the first log lines instead of guessed at.
   console.log(`[reporter] staleness: ${describeStalenessBound(await refreshStalenessBound())}`);
 
-  void runCycle();
-  setInterval(() => void runCycle(), config.pollIntervalMs);
+  // `on`, not `once`: a second signal during the drain must reach shutdown()
+  // (which ignores it) instead of Node's default handler, which would kill the
+  // process with a transaction in flight.
+  for (const signal of ["SIGTERM", "SIGINT"] as const) {
+    process.on(signal, () => void shutdown(signal));
+  }
+
+  tick();
+  timer = setInterval(tick, config.pollIntervalMs);
 }
 
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   startReporterLoop().catch((err) => {
-    console.error("[reporter] startup failed:", (err as Error).message);
+    console.error("[reporter] startup failed:", stripUrls(String((err as Error).message)));
     process.exit(1);
   });
 }

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { createPublicClient, http, parseEther, type Address } from "viem";
 import addressBookJson from "./addresses.json" with { type: "json" };
+import { redactUrl, registerSecretUrl } from "./redact.js";
 
 type NetworkName = "local" | "sepolia" | "production";
 
@@ -96,9 +97,8 @@ function resolveOracleAddress(network: NetworkName, chainId: number): Address {
  *
  * viem's own defaults are retryCount 3 at a flat retryDelay of 150ms against a
  * 10s timeout - under half a second of cover for an RPC that stalls for ten.
- * That is what the reporter kept hitting in production: 19 `eth_blockNumber`
- * timeouts against rpc-agricast in 30 days, each one failing a whole cycle.
- * Widen the cover so a stall has to persist before it takes a cycle down.
+ * A stalled `eth_blockNumber` then fails a whole reporter cycle. Widen the
+ * cover so a stall has to persist before it takes a cycle down.
  *
  * All three overridable, because the right numbers depend on the RPC behind
  * the URL and swapping that URL is a config change, not a code change.
@@ -123,7 +123,7 @@ export async function assertOracleAddressHasCode(rpcUrl: string, oracleAddress: 
   const code = await client.getCode({ address: oracleAddress });
   if (!code || code === "0x") {
     throw new Error(
-      `No contract bytecode found at oracle address ${oracleAddress} on RPC ${rpcUrl}. ` +
+      `No contract bytecode found at oracle address ${oracleAddress} on RPC ${redactUrl(rpcUrl)}. ` +
         "Check ORACLE_ADDRESS / src/addresses.json and RPC_URL - refusing to start against an empty address.",
     );
   }
@@ -174,6 +174,8 @@ export function loadConfig(): ReporterConfig {
   }
 
   const rpcUrl = requireEnv("RPC_URL");
+  // Every stripUrls() call from here on also scrubs pieces of this URL.
+  registerSecretUrl(rpcUrl);
   const chainId = Number(requireEnv("CHAIN_ID"));
   if (!Number.isInteger(chainId) || chainId <= 0) {
     throw new Error("CHAIN_ID must be a positive integer");

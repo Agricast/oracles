@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import {
   trace,
   metrics,
@@ -19,6 +17,8 @@ import { OTLPMetricExporter } from "@opentelemetry/exporter-metrics-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { UndiciInstrumentation } from "@opentelemetry/instrumentation-undici";
+import { serviceVersion, serviceInstanceId } from "./release.js";
+import { scrubSecrets, stripUrls } from "./redact.js";
 
 /**
  * Opt-in OTLP traces + logs + metrics for this standalone reporter, against
@@ -89,19 +89,6 @@ export function isOtelEnabled(): boolean {
 
 const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "agricast-oracle-reporter";
 
-// Package version for the resource's service.version - read from disk rather
-// than a static JSON import so this resolves the same way whether it's run
-// from src/ (tsx) or dist/ (built): both sit one level under package.json.
-function readServiceVersion(): string {
-  try {
-    const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
-    return pkg.version ?? "0.0.0";
-  } catch {
-    return "0.0.0";
-  }
-}
-
 // Exported unconditionally: trace.getTracer() returns a harmless no-op
 // tracer when no provider is registered, so reporter.ts can always import
 // and call `tracer.startActiveSpan` regardless of whether OTel is enabled.
@@ -129,11 +116,16 @@ export async function traceSpan<T>(
       span.setStatus({ code: SpanStatusCode.OK });
       return result;
     } catch (e) {
-      span.recordException(e as Error);
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: e instanceof Error ? e.message : String(e),
+      // Spans leave the process, and viem errors carry "URL: <rpc url>" with
+      // the provider key in it. Record a scrubbed copy; the caller still gets
+      // the original error.
+      const message = stripUrls(e instanceof Error ? e.message : String(e));
+      span.recordException({
+        name: e instanceof Error ? e.name : "Error",
+        message,
+        stack: e instanceof Error && e.stack ? stripUrls(e.stack) : undefined,
       });
+      span.setStatus({ code: SpanStatusCode.ERROR, message });
       throw e;
     } finally {
       span.end();
@@ -189,7 +181,8 @@ function patchConsole(): void {
       otelLogger?.emit({
         severityNumber: number,
         severityText: text,
-        body: args.map((a) => (typeof a === "string" ? a : String(a))).join(" "),
+        // Call sites already strip URLs; this catches an Error passed straight in.
+        body: stripUrls(args.map((a) => (typeof a === "string" ? a : String(a))).join(" ")),
         // Pass the active context explicitly - the SDK only attaches
         // trace/span ids to a log record when a context is given, it does
         // not fall back to context.active() on its own.
@@ -197,6 +190,34 @@ function patchConsole(): void {
       });
     };
   }
+}
+
+/**
+ * undici requestHook. The instrumentation puts the full request URL on every
+ * HTTP span (url.full, url.path, url.query), and for RPC calls that URL holds
+ * the provider key. Runs after those are set, so it overwrites them with the
+ * registered secret URL's pieces scrubbed; other URLs are left as they are.
+ */
+export function redactHttpSpan(
+  span: { setAttribute: (key: string, value: string) => unknown },
+  request: { origin: string; path: string },
+): void {
+  let url: URL;
+  try {
+    url = new URL(request.path, request.origin);
+  } catch {
+    return;
+  }
+  span.setAttribute("url.full", scrubSecrets(url.toString()));
+  span.setAttribute("url.path", scrubSecrets(url.pathname));
+  span.setAttribute("url.query", scrubSecrets(url.search));
+}
+
+let providersShutdown: (() => Promise<void>) | null = null;
+
+/** Flushes and closes the OTel providers. No-op when OTel is off. */
+export async function shutdownOtel(): Promise<void> {
+  await providersShutdown?.();
 }
 
 function initOtel(): void {
@@ -214,7 +235,7 @@ function initOtel(): void {
   const base = endpoint.replace(/\/+$/, "");
   const resource = resourceFromAttributes({
     "service.name": SERVICE_NAME,
-    "service.version": readServiceVersion(),
+    "service.version": serviceVersion(),
     // Default to "production" (not "development") to match backend's
     // buildResource() - an unset NODE_ENV shouldn't split this service into
     // its own SigNoz environment away from everything else.
@@ -224,7 +245,7 @@ function initOtel(): void {
     // rather than this newer ".name" form, so both are set to the same
     // value (same convention backend/src/lib/otel.ts uses).
     "deployment.environment.name": process.env.NODE_ENV || "production",
-    "service.instance.id": process.env.GIT_COMMIT || "unknown",
+    "service.instance.id": serviceInstanceId(),
   });
 
   const tracerProvider = new NodeTracerProvider({
@@ -268,19 +289,17 @@ function initOtel(): void {
   // viem's http() transport, which also runs on Node's built-in fetch/undici
   // - one instrumentation gets both the price/markets API calls and the RPC
   // calls into SigNoz as child spans of whatever span is active.
-  registerInstrumentations({ instrumentations: [new UndiciInstrumentation()] });
+  registerInstrumentations({ instrumentations: [new UndiciInstrumentation({ requestHook: redactHttpSpan })] });
 
   patchConsole();
 
-  for (const signal of ["SIGTERM", "SIGINT"] as const) {
-    process.once(signal, () => {
-      void Promise.allSettled([
-        tracerProvider.shutdown(),
-        loggerProvider.shutdown(),
-        meterProvider.shutdown(),
-      ]);
-    });
-  }
+  // No signal handler here: the reporter drains its in-flight cycle first and
+  // then calls shutdownOtel(), so the last cycle's spans and logs are not
+  // flushed away from under it.
+  providersShutdown = () =>
+    Promise.allSettled([tracerProvider.shutdown(), loggerProvider.shutdown(), meterProvider.shutdown()]).then(
+      () => undefined,
+    );
 
   console.log(`[otel] traces+logs+metrics enabled -> ${base} (service=${SERVICE_NAME})`);
 }

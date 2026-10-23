@@ -322,7 +322,8 @@ describe("runCycle ordering (static guard)", () => {
   });
 
   test("the resolved bound is threaded into every market rather than re-fetched", () => {
-    expect(source).toContain("submitReportForMarket(clients, market, bound)");
+    expect(source).toContain("submitReportForMarket(clients, market, bound, getPrice)");
+    expect(source).toContain("fetchScaledPrice(productCode, bound)");
     // price-source must not resolve its own bound - that is what let one cycle
     // judge different markets against different windows.
     const priceSource = readFileSync(new URL("../src/price-source.ts", import.meta.url), "utf8");

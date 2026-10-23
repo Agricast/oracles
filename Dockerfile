@@ -30,6 +30,11 @@ RUN npx playwright install --with-deps chromium \
 
 COPY --from=build /app/dist ./dist
 
+# Short git SHA, passed by the build (--build-arg GIT_COMMIT=...). otel-init.ts
+# turns it into service.version = 1.0.0+<sha7>; unset reads as 1.0.0+unknown.
+ARG GIT_COMMIT=
+ENV GIT_COMMIT=$GIT_COMMIT
+
 # Run as a dedicated non-root user. The scraper renders untrusted remote
 # content (data.moc.go.th) with Chromium's sandbox now enabled (the
 # --no-sandbox launch arg was removed from moc-scraper.ts) - a renderer
@@ -38,6 +43,16 @@ COPY --from=build /app/dist ./dist
 RUN groupadd --system reporter && useradd --system --gid reporter --create-home reporter \
   && chown -R reporter:reporter /app
 USER reporter
+
+# The reporter touches this file after every cycle that gets through its markets
+# (src/heartbeat.ts), even when single markets failed. A cycle that throws (RPC
+# down, every market failing) or finds the reporter unregistered/under stake does
+# not touch it. Unhealthy when it is older than 10 minutes: a short RPC outage
+# (a few backoff steps) stays healthy; a reporter that is hung, inactive, or
+# failing every cycle for 10+ minutes does not. A /tmp file is per container.
+ENV HEARTBEAT_FILE=/tmp/reporter-heartbeat
+HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=3 \
+  CMD test -n "$(find "$HEARTBEAT_FILE" -mmin -10 2>/dev/null)" || exit 1
 
 # REPORTER_PRIVATE_KEY and the rest of .env.example must be supplied at
 # runtime (docker run --env-file .env ...) - never baked into the image.

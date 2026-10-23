@@ -2,6 +2,7 @@
 import { createInterface } from "node:readline/promises";
 import { formatEther, parseEther } from "viem";
 import { getOracleClients, AgriOracleAbi } from "./oracle.js";
+import { stripUrls } from "./redact.js";
 
 /**
  * Explicit reporter commands. Nothing here runs on a timer or auto-spends
@@ -271,6 +272,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("error:", (err as Error).message);
+  console.error("error:", stripUrls((err as Error).message));
   process.exitCode = 1;
 });
