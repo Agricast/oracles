@@ -13,9 +13,10 @@ export function redactUrl(url: string): string {
 
 // Literal strings to scrub from every message, longest first, each with what
 // replaces it. Filled from the configured RPC URL by registerSecretUrl().
-// The regex matches the literal with every %xx escape in either hex case, and
-// nothing else, so unrelated text ("100%dead") is never touched.
-let secrets: Array<{ literal: string; pattern: RegExp; replacement: string }> = [];
+// A literal matches with the two characters after each "%" compared without
+// case (see replaceLiteral), and nothing else, so unrelated text ("100%dead")
+// is never touched.
+let secrets: Array<[string, string]> = [];
 // Path segments and the username are often generic ("/rpc", "v2", "user") and
 // would shred hostnames and words, so only long ones count. A password or a
 // query value is a secret by definition and is scrubbed down to 4 chars;
@@ -101,17 +102,7 @@ export function registerSecretUrl(url: string): void {
   for (const p of credentialParts) {
     if (decodedLength(p) >= MIN_CREDENTIAL_PIECE && keep(p)) next.push([p, "<redacted>"]);
   }
-  const compiled = next.map(([literal, replacement]) => ({
-    literal,
-    replacement,
-    pattern: new RegExp(
-      literal
-        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-        .replace(/%([0-9a-f])([0-9a-f])/gi, (_, a: string, b: string) => `%[${a.toLowerCase()}${a.toUpperCase()}][${b.toLowerCase()}${b.toUpperCase()}]`),
-      "g",
-    ),
-  }));
-  secrets = [...secrets, ...compiled].sort((a, b) => b.literal.length - a.literal.length);
+  secrets = [...secrets, ...next].sort((a, b) => b[0].length - a[0].length);
 }
 
 /** For tests. */
@@ -126,12 +117,42 @@ const CLOSERS: Record<string, string> = { ">": "<", ")": "(", "]": "[", "}": "{"
 const INVALID_URL = "<invalid url>";
 const count = (text: string, ch: string) => text.split(ch).length - 1;
 
+/** Replaces every occurrence of `literal`, treating the two characters after a "%" as case-insensitive hex. */
+function replaceLiteral(text: string, literal: string, replacement: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    let j = 0;
+    let k = i;
+    while (j < literal.length && k < text.length) {
+      if (literal[j] === "%" && text[k] === "%" && j + 2 < literal.length && k + 2 < text.length) {
+        if (literal.slice(j + 1, j + 3).toLowerCase() !== text.slice(k + 1, k + 3).toLowerCase()) break;
+        j += 3;
+        k += 3;
+      } else if (literal[j] === text[k]) {
+        j++;
+        k++;
+      } else {
+        break;
+      }
+    }
+    if (j === literal.length && literal.length > 0) {
+      out += replacement;
+      i = k;
+    } else {
+      out += text[i];
+      i++;
+    }
+  }
+  return out;
+}
+
 /** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
 export function scrubSecrets(message: string, onlyWithWhitespace = false): string {
   let out = message;
-  for (const { literal, pattern, replacement } of secrets) {
+  for (const [literal, replacement] of secrets) {
     if (onlyWithWhitespace && !/\s/.test(literal)) continue;
-    out = out.replace(pattern, () => replacement);
+    out = replaceLiteral(out, literal, replacement);
   }
   return out;
 }
