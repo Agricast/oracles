@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { createPublicClient, http, parseEther, type Address } from "viem";
 import addressBookJson from "./addresses.json" with { type: "json" };
-import { redactUrl } from "./redact.js";
+import { redactUrl, registerSecretUrl } from "./redact.js";
 
 type NetworkName = "local" | "sepolia" | "production";
 
@@ -174,6 +174,8 @@ export function loadConfig(): ReporterConfig {
   }
 
   const rpcUrl = requireEnv("RPC_URL");
+  // Every stripUrls() call from here on also scrubs pieces of this URL.
+  registerSecretUrl(rpcUrl);
   const chainId = Number(requireEnv("CHAIN_ID"));
   if (!Number.isInteger(chainId) || chainId <= 0) {
     throw new Error("CHAIN_ID must be a positive integer");
