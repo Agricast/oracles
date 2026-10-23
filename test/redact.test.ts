@@ -120,3 +120,13 @@ describe("secrets containing whitespace once decoded", () => {
     expect(out).not.toContain("pass ");
   });
 });
+
+describe("raw query values", () => {
+  test("the still-encoded value is redacted on its own", () => {
+    registerSecretUrl("https://rpc.example.com/rpc?apikey=abcd%20efgh1234");
+    expect(stripUrls("apikey abcd%20efgh1234 rejected")).not.toContain("efgh1234");
+    resetSecretUrls();
+    registerSecretUrl("https://rpc.example.com/rpc?apikey=abcd+efgh1234");
+    expect(stripUrls("apikey abcd+efgh1234 rejected")).not.toContain("efgh1234");
+  });
+});

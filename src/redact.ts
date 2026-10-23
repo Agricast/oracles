@@ -41,7 +41,18 @@ export function registerSecretUrl(url: string): void {
   for (const segment of u.pathname.split("/")) pathParts.add(segment);
   if (u.username) pathParts.add(u.username);
   if (u.search.length > 1) credentialParts.add(u.search.slice(1));
-  for (const value of u.searchParams.values()) credentialParts.add(value);
+  for (const value of u.searchParams.values()) {
+    credentialParts.add(value);
+    credentialParts.add(encodeURIComponent(value));
+  }
+  // The value as written in the URL, before any decoding ("+" kept and as a space).
+  for (const pair of u.search.slice(1).split("&")) {
+    const eq = pair.indexOf("=");
+    if (eq < 0) continue;
+    const raw = pair.slice(eq + 1);
+    credentialParts.add(raw);
+    credentialParts.add(raw.replaceAll("+", " "));
+  }
   if (u.password) credentialParts.add(u.password);
   for (const set of [pathParts, credentialParts]) {
     for (const p of [...set]) {
