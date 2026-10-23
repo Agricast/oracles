@@ -73,4 +73,27 @@ describe("stripUrls", () => {
     expect(out).not.toContain("pw5ch");
     expect(out).not.toContain("qv6chr");
   });
+
+  test("a credential piece that matches the scheme or host cannot break URL redaction", () => {
+    // Short path key (under the 8-char path floor) so only the URL regex can
+    // remove it; the password collides with the scheme or host.
+    for (const pw of ["https", "http", "rpc1", "%2F%2Frp"]) {
+      resetSecretUrls();
+      registerSecretUrl(`https://bob:${pw}@rpc1.example.com/k3y7x`);
+      for (const msg of [
+        "URL: https://rpc1.example.com/k3y7x",
+        `URL: "https://rpc1.example.com/k3y7x"`,
+        "POST https://rpc1.example.com/k3y7x?x=1 failed",
+      ]) {
+        const out = stripUrls(msg);
+        expect(out).not.toContain("k3y7x");
+        expect(out).toContain("https://rpc1.example.com");
+      }
+    }
+    // Not inside scheme or host, so it is registered; scrubbed before the URL
+    // pattern ran, it would eat "s://" and leave the key in plain text.
+    resetSecretUrls();
+    registerSecretUrl(`https://bob:${encodeURIComponent("s://rpc1.example.com/zz")}@rpc1.example.com/k3y7x`);
+    expect(stripUrls("URL: https://rpc1.example.com/zz/k3y7x")).toBe("URL: https://rpc1.example.com");
+  });
 });

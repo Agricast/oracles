@@ -20,6 +20,7 @@ let secrets: Array<[string, string]> = [];
 // below that a replace-everywhere would mangle unrelated text.
 const MIN_PATH_PIECE = 8;
 const MIN_CREDENTIAL_PIECE = 4;
+const SCHEME_WORDS = new Set(["http", "https", "ws", "wss"]);
 
 /**
  * Remembers a URL whose path, query and userinfo must never be logged, so
@@ -61,8 +62,12 @@ export function registerSecretUrl(url: string): void {
     [encoded, encodeURIComponent(host)],
     [encoded.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()), encodeURIComponent(host)],
   ];
-  for (const p of pathParts) if (p.length >= MIN_PATH_PIECE) next.push([p, "<redacted>"]);
-  for (const p of credentialParts) if (p.length >= MIN_CREDENTIAL_PIECE) next.push([p, "<redacted>"]);
+  // A piece inside the scheme or host would be replaced inside the redacted
+  // "https://host" stripUrls() leaves behind, breaking it (and, if run first,
+  // breaking URL detection so the rest of the URL leaked).
+  const keep = (p: string) => !host.includes(p) && !SCHEME_WORDS.has(p.toLowerCase());
+  for (const p of pathParts) if (p.length >= MIN_PATH_PIECE && keep(p)) next.push([p, "<redacted>"]);
+  for (const p of credentialParts) if (p.length >= MIN_CREDENTIAL_PIECE && keep(p)) next.push([p, "<redacted>"]);
   secrets = [...secrets, ...next].sort((a, b) => b[0].length - a[0].length);
 }
 
@@ -89,10 +94,13 @@ export function scrubSecrets(message: string): string {
  * piece of a registered secret URL.
  */
 export function stripUrls(message: string): string {
-  return scrubSecrets(message).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
+  // URLs first: scrubbing pieces first could turn a URL into text the pattern
+  // no longer recognises, and whatever path was left then leaked.
+  const urlsRedacted = message.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
     const tail = token.match(TRAILING)?.[0] ?? "";
     const host = redactUrl(token.slice(0, token.length - tail.length));
     // Keep the closing punctuation only when it holds nothing but punctuation.
     return host + tail;
   });
+  return scrubSecrets(urlsRedacted);
 }
