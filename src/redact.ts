@@ -7,7 +7,7 @@ export function redactUrl(url: string): string {
     const u = new URL(url);
     return `${u.protocol}//${u.host}`;
   } catch {
-    return "<invalid url>";
+    return INVALID_URL;
   }
 }
 
@@ -63,6 +63,18 @@ export function registerSecretUrl(url: string): void {
       }
     }
   }
+  // Every spelling a logger might give the same credential: "+" and " " are
+  // interchangeable in a query string, and either may be percent-encoded with
+  // upper- or lower-case hex.
+  for (const p of [...credentialParts]) {
+    for (const v of [p, p.replaceAll("+", " "), p.replaceAll(" ", "+")]) {
+      const escaped = encodeURIComponent(v);
+      for (const form of [v, escaped, escaped.replaceAll("%20", "+")]) {
+        credentialParts.add(form);
+        credentialParts.add(form.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()));
+      }
+    }
+  }
   const host = redactUrl(url);
   // The whole URL as it appears in JSON ("https:\/\/...") and percent-encoded
   // (upper- and lower-case escapes), each replaced by the same encoding of the host.
@@ -90,6 +102,9 @@ export function resetSecretUrls(): void {
 // Characters that commonly close a URL in prose or JSON. Kept after the
 // redacted host so `"<url>",` still reads as `"<host>",`.
 const TRAILING = /["'<>)\]},;.]+$/;
+const CLOSERS: Record<string, string> = { ">": "<", ")": "(", "]": "[", "}": "{" };
+const INVALID_URL = "<invalid url>";
+const count = (text: string, ch: string) => text.split(ch).length - 1;
 
 /** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
 export function scrubSecrets(message: string, onlyWithWhitespace = false): string {
@@ -114,9 +129,17 @@ export function stripUrls(message: string): string {
   // whitespace-delimited URL match, so they go first.
   const urlsRedacted = scrubSecrets(message, true).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
     const tail = token.match(TRAILING)?.[0] ?? "";
-    const host = redactUrl(token.slice(0, token.length - tail.length));
-    // Keep the closing punctuation only when it holds nothing but punctuation.
-    return host + tail;
+    const body = token.slice(0, token.length - tail.length);
+    const host = redactUrl(body);
+    // A closer whose opener sat inside the removed path ("/v2/<KEY>") has
+    // nothing to close any more, and after "<invalid url>" a ">" is noise.
+    let kept = "";
+    for (const ch of tail) {
+      const opener = CLOSERS[ch];
+      if (opener && (host === INVALID_URL ? ch === ">" : count(body, opener) > count(kept, ch) + count(body, ch))) continue;
+      kept += ch;
+    }
+    return host + kept;
   });
   return scrubSecrets(urlsRedacted);
 }

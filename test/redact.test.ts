@@ -130,3 +130,43 @@ describe("raw query values", () => {
     expect(stripUrls("apikey abcd+efgh1234 rejected")).not.toContain("efgh1234");
   });
 });
+
+describe("cross-form query values", () => {
+  // Fake value; every spelling a logger could produce for it.
+  const spellings = ["ab+cd1234", "ab cd1234", "ab%2Bcd1234", "ab%2bcd1234", "ab%20cd1234", "ab%20cd1234".toLowerCase()];
+  const urls = [
+    "https://rpc.example.com/v2?key=ab+cd1234",
+    "https://rpc.example.com/v2?key=ab%2Bcd1234",
+    "https://rpc.example.com/v2?key=ab%2bcd1234",
+    "https://rpc.example.com/v2?key=ab%20cd1234",
+  ];
+
+  for (const url of urls) {
+    test(`every spelling is scrubbed after registering ${url}`, () => {
+      registerSecretUrl(url);
+      for (const s of spellings) {
+        for (const text of [s, `x ${s} y`, `key=${s}`]) {
+          expect(stripUrls(text)).not.toContain("cd1234");
+        }
+      }
+    });
+  }
+
+  test("the 4-char minimum and host guard still hold", () => {
+    registerSecretUrl("https://rpc.example.com/v2?key=a+b");
+    expect(stripUrls("a b a+b https://rpc.example.com")).toBe("a b a+b https://rpc.example.com");
+  });
+});
+
+describe("stray closing bracket", () => {
+  test("a closer whose opener was inside the removed path is dropped", () => {
+    expect(stripUrls("https://rpc.example.com/v2/<SECRETKEY123>")).toBe("https://rpc.example.com");
+    expect(stripUrls("a <https://[bad>")).not.toContain(">>");
+    expect(stripUrls("<invalid>")).toBe("<invalid>");
+  });
+
+  test("a balanced wrapper around the URL is kept", () => {
+    expect(stripUrls("<https://a.example/p>")).toBe("<https://a.example>");
+    expect(stripUrls("(see https://a.example/p)")).toBe("(see https://a.example)");
+  });
+});
