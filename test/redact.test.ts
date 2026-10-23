@@ -195,3 +195,17 @@ describe("outer closers and escape case", () => {
     }
   });
 });
+
+describe("per-secret escape matching and decoded length floor", () => {
+  test("text that matches no secret is returned byte-identical", () => {
+    registerSecretUrl("https://rpc.x.com/v2/SECRETKEY123?key=abcd");
+    const text = "100%dead beef, grew 5%because, %2fpath";
+    expect(stripUrls(text)).toBe(text);
+  });
+
+  test("the 4-char floor applies to the decoded value", () => {
+    registerSecretUrl("https://rpc.x.com/v2?k=a+b");
+    const text = "a b a+b a%20b a%2Bb";
+    expect(stripUrls(text)).toBe(text);
+  });
+});

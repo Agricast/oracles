@@ -13,7 +13,9 @@ export function redactUrl(url: string): string {
 
 // Literal strings to scrub from every message, longest first, each with what
 // replaces it. Filled from the configured RPC URL by registerSecretUrl().
-let secrets: Array<[string, string]> = [];
+// The regex matches the literal with every %xx escape in either hex case, and
+// nothing else, so unrelated text ("100%dead") is never touched.
+let secrets: Array<{ literal: string; pattern: RegExp; replacement: string }> = [];
 // Path segments and the username are often generic ("/rpc", "v2", "user") and
 // would shred hostnames and words, so only long ones count. A password or a
 // query value is a secret by definition and is scrubbed down to 4 chars;
@@ -87,10 +89,29 @@ export function registerSecretUrl(url: string): void {
   // breaking URL detection so the rest of the URL leaked).
   const keep = (p: string) => !host.includes(p) && !SCHEME_WORDS.has(p.toLowerCase());
   for (const p of pathParts) if (p.length >= MIN_PATH_PIECE && keep(p)) next.push([p, "<redacted>"]);
-  for (const p of credentialParts) if (p.length >= MIN_CREDENTIAL_PIECE && keep(p)) next.push([p, "<redacted>"]);
-  // Escapes are matched case-insensitively by upper-casing them on both sides.
-  const normalized = next.map(([k, r]): [string, string] => [upperEscapes(k), r]);
-  secrets = [...secrets, ...normalized].sort((a, b) => b[0].length - a[0].length);
+  // The floor applies to the decoded value: "a%20b" is 3 characters, not 5.
+  const decodedLength = (p: string) => {
+    const plain = p.replaceAll("+", " ");
+    try {
+      return decodeURIComponent(plain).length;
+    } catch {
+      return plain.length;
+    }
+  };
+  for (const p of credentialParts) {
+    if (decodedLength(p) >= MIN_CREDENTIAL_PIECE && keep(p)) next.push([p, "<redacted>"]);
+  }
+  const compiled = next.map(([literal, replacement]) => ({
+    literal,
+    replacement,
+    pattern: new RegExp(
+      literal
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/%([0-9a-f])([0-9a-f])/gi, (_, a: string, b: string) => `%[${a.toLowerCase()}${a.toUpperCase()}][${b.toLowerCase()}${b.toUpperCase()}]`),
+      "g",
+    ),
+  }));
+  secrets = [...secrets, ...compiled].sort((a, b) => b.literal.length - a.literal.length);
 }
 
 /** For tests. */
@@ -103,15 +124,14 @@ export function resetSecretUrls(): void {
 const TRAILING = /["'<>)\]},;.]+$/;
 const CLOSERS: Record<string, string> = { ">": "<", ")": "(", "]": "[", "}": "{" };
 const INVALID_URL = "<invalid url>";
-const upperEscapes = (text: string) => text.replace(/%[0-9a-f]{2}/gi, (m) => m.toUpperCase());
 const count = (text: string, ch: string) => text.split(ch).length - 1;
 
 /** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
 export function scrubSecrets(message: string, onlyWithWhitespace = false): string {
-  let out = secrets.length ? upperEscapes(message) : message;
-  for (const [secret, replacement] of secrets) {
-    if (onlyWithWhitespace && !/\s/.test(secret)) continue;
-    out = out.split(secret).join(replacement);
+  let out = message;
+  for (const { literal, pattern, replacement } of secrets) {
+    if (onlyWithWhitespace && !/\s/.test(literal)) continue;
+    out = out.replace(pattern, () => replacement);
   }
   return out;
 }
