@@ -41,7 +41,18 @@ export function registerSecretUrl(url: string): void {
   for (const segment of u.pathname.split("/")) pathParts.add(segment);
   if (u.username) pathParts.add(u.username);
   if (u.search.length > 1) credentialParts.add(u.search.slice(1));
-  for (const value of u.searchParams.values()) credentialParts.add(value);
+  for (const value of u.searchParams.values()) {
+    credentialParts.add(value);
+    credentialParts.add(encodeURIComponent(value));
+  }
+  // The value as written in the URL, before any decoding ("+" kept and as a space).
+  for (const pair of u.search.slice(1).split("&")) {
+    const eq = pair.indexOf("=");
+    if (eq < 0) continue;
+    const raw = pair.slice(eq + 1);
+    credentialParts.add(raw);
+    credentialParts.add(raw.replaceAll("+", " "));
+  }
   if (u.password) credentialParts.add(u.password);
   for (const set of [pathParts, credentialParts]) {
     for (const p of [...set]) {
@@ -81,9 +92,12 @@ export function resetSecretUrls(): void {
 const TRAILING = /["'<>)\]},;.]+$/;
 
 /** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
-export function scrubSecrets(message: string): string {
+export function scrubSecrets(message: string, onlyWithWhitespace = false): string {
   let out = message;
-  for (const [secret, replacement] of secrets) out = out.split(secret).join(replacement);
+  for (const [secret, replacement] of secrets) {
+    if (onlyWithWhitespace && !/\s/.test(secret)) continue;
+    out = out.split(secret).join(replacement);
+  }
   return out;
 }
 
@@ -96,7 +110,9 @@ export function scrubSecrets(message: string): string {
 export function stripUrls(message: string): string {
   // URLs first: scrubbing pieces first could turn a URL into text the pattern
   // no longer recognises, and whatever path was left then leaked.
-  const urlsRedacted = message.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
+  // Pieces that contain whitespace (a decoded %20 or +) would be cut by the
+  // whitespace-delimited URL match, so they go first.
+  const urlsRedacted = scrubSecrets(message, true).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
     const tail = token.match(TRAILING)?.[0] ?? "";
     const host = redactUrl(token.slice(0, token.length - tail.length));
     // Keep the closing punctuation only when it holds nothing but punctuation.
