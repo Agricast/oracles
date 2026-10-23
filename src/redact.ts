@@ -14,7 +14,12 @@ export function redactUrl(url: string): string {
 // Literal strings to scrub from every message, longest first, each with what
 // replaces it. Filled from the configured RPC URL by registerSecretUrl().
 let secrets: Array<[string, string]> = [];
-const MIN_SECRET_PIECE = 8;
+// Path segments and the username are often generic ("/rpc", "v2", "user") and
+// would shred hostnames and words, so only long ones count. A password or a
+// query value is a secret by definition and is scrubbed down to 4 chars;
+// below that a replace-everywhere would mangle unrelated text.
+const MIN_PATH_PIECE = 8;
+const MIN_CREDENTIAL_PIECE = 4;
 
 /**
  * Remembers a URL whose path, query and userinfo must never be logged, so
@@ -28,19 +33,22 @@ export function registerSecretUrl(url: string): void {
   } catch {
     return;
   }
-  const parts = new Set<string>();
-  if (u.pathname.length > 1) parts.add(u.pathname);
+  const pathParts = new Set<string>();
+  const credentialParts = new Set<string>();
+  if (u.pathname.length > 1) pathParts.add(u.pathname);
   // A key in the path shows up on its own too ("key <KEY> is invalid").
-  for (const segment of u.pathname.split("/")) parts.add(segment);
-  if (u.search.length > 1) parts.add(u.search.slice(1));
-  for (const value of u.searchParams.values()) parts.add(value);
-  if (u.username) parts.add(u.username);
-  if (u.password) parts.add(u.password);
-  for (const p of [...parts]) {
-    try {
-      parts.add(decodeURIComponent(p));
-    } catch {
-      // not percent-encoded, nothing to add
+  for (const segment of u.pathname.split("/")) pathParts.add(segment);
+  if (u.username) pathParts.add(u.username);
+  if (u.search.length > 1) credentialParts.add(u.search.slice(1));
+  for (const value of u.searchParams.values()) credentialParts.add(value);
+  if (u.password) credentialParts.add(u.password);
+  for (const set of [pathParts, credentialParts]) {
+    for (const p of [...set]) {
+      try {
+        set.add(decodeURIComponent(p));
+      } catch {
+        // not percent-encoded, nothing to add
+      }
     }
   }
   const host = redactUrl(url);
@@ -53,9 +61,8 @@ export function registerSecretUrl(url: string): void {
     [encoded, encodeURIComponent(host)],
     [encoded.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()), encodeURIComponent(host)],
   ];
-  // Short pieces ("/rpc", "v2", a username like "user") would shred hostnames
-  // and ordinary words; key material is longer than this.
-  for (const p of parts) if (p.length >= MIN_SECRET_PIECE) next.push([p, "<redacted>"]);
+  for (const p of pathParts) if (p.length >= MIN_PATH_PIECE) next.push([p, "<redacted>"]);
+  for (const p of credentialParts) if (p.length >= MIN_CREDENTIAL_PIECE) next.push([p, "<redacted>"]);
   secrets = [...secrets, ...next].sort((a, b) => b[0].length - a[0].length);
 }
 

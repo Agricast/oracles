@@ -66,4 +66,11 @@ describe("stripUrls", () => {
     expect(stripUrls("fallback https://other.example/rpc/v1 down")).toBe("fallback https://other.example down");
     expect(stripUrls("apikey QUERYKEY456 rejected")).not.toContain("QUERYKEY456");
   });
+
+  test("short passwords and query values are still scrubbed", () => {
+    registerSecretUrl("https://bob:pw5ch@rpc.example.com/rpc?key=qv6chr&x=1");
+    const out = stripUrls("auth bob:pw5ch failed for key qv6chr");
+    expect(out).not.toContain("pw5ch");
+    expect(out).not.toContain("qv6chr");
+  });
 });
