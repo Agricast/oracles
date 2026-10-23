@@ -4,10 +4,17 @@ import { hostname } from "node:os";
 // "service.version = 1.0.0+<sha7>" reads the same for every service.
 const BASE_VERSION = "1.0.0";
 
-/** `1.0.0+<sha7>` from GIT_COMMIT, or `1.0.0+unknown` when it is unset or not a hex SHA. */
-export function serviceVersion(gitCommit: string | undefined = process.env.GIT_COMMIT): string {
-  const sha = (gitCommit ?? "").trim().toLowerCase();
-  return /^[0-9a-f]{7,40}$/.test(sha) ? `${BASE_VERSION}+${sha.slice(0, 7)}` : `${BASE_VERSION}+unknown`;
+// Same order as the backend: our own build arg first, then what Coolify injects.
+// compose passes GIT_COMMIT="" when the build arg is unset, so empty means unset.
+const COMMIT_ENV_VARS = ["GIT_COMMIT", "SOURCE_COMMIT", "COOLIFY_GIT_COMMIT_SHA"] as const;
+
+/** `1.0.0+<sha7>` from the first commit variable that holds a hex SHA, else `1.0.0+unknown`. */
+export function serviceVersion(env: Record<string, string | undefined> = process.env): string {
+  for (const name of COMMIT_ENV_VARS) {
+    const sha = (env[name] ?? "").trim().toLowerCase();
+    if (/^[0-9a-f]{7,40}$/.test(sha)) return `${BASE_VERSION}+${sha.slice(0, 7)}`;
+  }
+  return `${BASE_VERSION}+unknown`;
 }
 
 /**

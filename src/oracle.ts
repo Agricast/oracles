@@ -8,6 +8,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { loadConfig, assertOracleAddressHasCode, rpcTransport } from "./config.js";
+import { redactUrl } from "./redact.js";
 import AgriOracleAbi from "./abi/AgriOracle.json" with { type: "json" };
 import { AGRI_ORACLE_DOMAIN, SIGNED_PRICE_TYPES } from "./abi/domain.js";
 
@@ -87,7 +88,7 @@ export async function getOracleClients() {
   const liveChainId = await publicClient.getChainId();
   if (liveChainId !== config.chainId) {
     throw new Error(
-      `CHAIN_ID mismatch: config says ${config.chainId} but RPC ${config.rpcUrl} reports ${liveChainId}. ` +
+      `CHAIN_ID mismatch: config says ${config.chainId} but RPC ${redactUrl(config.rpcUrl)} reports ${liveChainId}. ` +
         "Refusing to start - update CHAIN_ID in .env to match the RPC you're pointed at.",
     );
   }

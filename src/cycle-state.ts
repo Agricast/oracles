@@ -32,8 +32,16 @@ export function resetTerminalQuestions(): void {
   terminalQuestions.clear();
 }
 
+// The Already* and QuorumNotMet names come from flags the contract only ever
+// sets to true (resolved, reportingSettled, finalized, cancelled,
+// reportingFailed), so they are final for that question.
 const TERMINAL_REVERT_NAMES = [
   "ReportingAlreadyFailed",
+  "QuorumNotMetReportingFailed",
+  "AlreadyResolved",
+  "AlreadySettled",
+  "AlreadyFinalized",
+  "AlreadyCancelled",
   "ReportingWindowClosed",
   "ReportingWindowExpiredCallSettle",
   "Reporting window closed",
@@ -70,15 +78,22 @@ export function createPriceCache<T>(fetcher: (productCode: string) => Promise<T>
  * down rather than one bad market) the first error is rethrown so the caller's
  * cycle backoff applies. A single failing market is just logged: it is not
  * evidence about the dependencies.
+ *
+ * `shouldStop` is checked before each item, so a shutdown lets the item in
+ * flight finish but starts no new one (and no new transaction).
  */
 export async function forEachIsolated<T>(
   items: readonly T[],
   handle: (item: T) => Promise<void>,
   onError: (item: T, err: unknown) => void,
+  shouldStop: () => boolean = () => false,
 ): Promise<void> {
   let firstErr: unknown;
   let failed = 0;
+  let attempted = 0;
   for (const item of items) {
+    if (shouldStop()) break;
+    attempted++;
     try {
       await handle(item);
     } catch (err) {
@@ -87,5 +102,5 @@ export async function forEachIsolated<T>(
       onError(item, err);
     }
   }
-  if (items.length > 1 && failed === items.length) throw firstErr;
+  if (attempted > 1 && failed === attempted && attempted === items.length) throw firstErr;
 }

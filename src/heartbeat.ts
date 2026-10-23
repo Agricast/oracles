@@ -3,8 +3,8 @@ import { writeFileSync } from "node:fs";
 /**
  * Touch the heartbeat file named by HEARTBEAT_FILE (the Dockerfile sets it for the
  * container HEALTHCHECK). Unset means no heartbeat, so local runs write nothing.
- * Called after a cycle completes without throwing, so its mtime is "last time
- * the loop got through a full cycle". Never throws: an unwritable path must not
+ * Called after a cycle gets through its markets while the reporter is active,
+ * so its mtime is "last time the loop got through a full cycle". Never throws: an unwritable path must not
  * take a working reporter down.
  */
 export function writeHeartbeat(path: string | undefined = process.env.HEARTBEAT_FILE): void {

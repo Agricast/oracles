@@ -1,5 +1,6 @@
 import { createPublicClient, type Address, type PublicClient } from "viem";
 import { loadConfig, rpcTransport } from "./config.js";
+import { redactUrl, stripUrls } from "./redact.js";
 import AgriOracleAbi from "./abi/AgriOracle.json" with { type: "json" };
 
 /**
@@ -330,7 +331,7 @@ async function resolveStalenessBound(): Promise<StalenessBound> {
     lastKnownChainMs = chainMs;
     consecutiveChainReadFailures = 0;
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
+    const detail = stripUrls(err instanceof Error ? err.message : String(err));
 
     consecutiveChainReadFailures += 1;
     const expiredNow =
@@ -358,7 +359,7 @@ async function resolveStalenessBound(): Promise<StalenessBound> {
     // exactly like a node seeing stale prices, which is the confusion this whole
     // change exists to end.
     console.error(
-      `[staleness] failed to read MAX_SOURCE_DATE_AGE from ${config.oracleAddress} via ${config.rpcUrl} ` +
+      `[staleness] failed to read MAX_SOURCE_DATE_AGE from ${config.oracleAddress} via ${redactUrl(config.rpcUrl)} ` +
         `(consecutive failures: ${consecutiveChainReadFailures}): ` +
         `${detail} - holding the ceiling at ${ceiling}; STALE_PRICE_HOURS ` +
         `(${hoursOf(config.staleThresholdMs)}h) still applies only if it is tighter. ` +

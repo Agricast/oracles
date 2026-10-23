@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { createPublicClient, http, parseEther, type Address } from "viem";
 import addressBookJson from "./addresses.json" with { type: "json" };
+import { redactUrl } from "./redact.js";
 
 type NetworkName = "local" | "sepolia" | "production";
 
@@ -122,7 +123,7 @@ export async function assertOracleAddressHasCode(rpcUrl: string, oracleAddress: 
   const code = await client.getCode({ address: oracleAddress });
   if (!code || code === "0x") {
     throw new Error(
-      `No contract bytecode found at oracle address ${oracleAddress} on RPC ${rpcUrl}. ` +
+      `No contract bytecode found at oracle address ${oracleAddress} on RPC ${redactUrl(rpcUrl)}. ` +
         "Check ORACLE_ADDRESS / src/addresses.json and RPC_URL - refusing to start against an empty address.",
     );
   }

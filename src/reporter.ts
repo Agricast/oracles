@@ -9,6 +9,7 @@ import { createPriceCache, forEachIsolated, isTerminal, markTerminal, terminalRe
 import { traceSpan, recordCycleDuration, incrementReportsSubmitted, shutdownOtel } from "./otel-init.js";
 import { writeHeartbeat } from "./heartbeat.js";
 import { hasPendingTx, waitForDrain } from "./shutdown.js";
+import { stripUrls } from "./redact.js";
 
 // On top of stake + registration fee, require this much extra balance before
 // AUTO_ENROLL registers - leaves room for the registerReporter gas cost itself.
@@ -364,6 +365,15 @@ async function submitReportForMarket(
 
   if (isTerminal(market.questionId)) return;
   if (await hasAlreadyReported(clients, market.questionId)) return;
+  // getQuestionReporters only sees mined reports. After a kill + restart the
+  // last submitReport can still be in the mempool, and sending another would
+  // put up a second bond for the same question.
+  if (await hasPendingTx(publicClient, account.address)) {
+    console.warn(
+      `[reporter] skipping ${market.productCode} (${market.questionId}): a transaction from this account is still pending`,
+    );
+    return;
+  }
 
   let price;
   try {
@@ -441,7 +451,7 @@ async function submitReportForMarket(
           account,
         } as never);
       } catch (err) {
-        const message = (err as Error).message ?? String(err);
+        const message = stripUrls((err as Error).message ?? String(err));
         const terminal = terminalRevertName(decodedRevertName(err), message);
         if (terminal) {
           if (markTerminal(market.questionId)) {
@@ -492,7 +502,7 @@ async function submitReportForMarket(
     console.log(`[reporter] submitted ${market.productCode} for ${market.questionId} (tx ${hash})`);
     incrementReportsSubmitted(1, { productCode: market.productCode });
   } catch (err) {
-    const message = (err as Error).message ?? String(err);
+    const message = stripUrls((err as Error).message ?? String(err));
     console.warn(`[reporter] submitReport failed for ${market.productCode} (${market.questionId}): ${message.slice(0, 200)}`);
   }
 }
@@ -531,14 +541,16 @@ async function runCycle(): Promise<void> {
   lastCycleTime = now;
   const startedAt = Date.now();
   try {
-    await traceSpan("reporter.cycle", async () => {
+    const completed = await traceSpan("reporter.cycle", async () => {
       const clients = await getOracleClients();
 
       // Quick health check to prevent hammering if RPC is down
       await clients.publicClient.getBlockNumber();
 
       await ensureEnrolled(clients);
-      if (!(await ensureActive(clients))) return;
+      // Not registered / under stake: the loop runs but reports nothing, so it
+      // must not look healthy.
+      if (!(await ensureActive(clients))) return false;
 
       // Re-read the on-chain MAX_SOURCE_DATE_AGE every cycle. It is about to
       // become governance-settable, and an operator widening it to end an
@@ -558,15 +570,20 @@ async function runCycle(): Promise<void> {
         (market) => submitReportForMarket(clients, market, bound, getPrice),
         (market, err) =>
           console.error(
-            `[reporter] market ${market.productCode} (${market.questionId}) failed, continuing: ${(err as Error).message?.split("\n")[0]}`,
+            `[reporter] market ${market.productCode} (${market.questionId}) failed, continuing: ${stripUrls(String((err as Error).message)).split("\n")[0]}`,
           ),
+        () => stopping,
       );
       
       consecutiveRpcFailures = 0; // reset on success
+      return true;
     });
-    writeHeartbeat();
+    // Only a cycle that got through its markets counts as alive, even if some
+    // markets failed on their own. One that threw (RPC down, every market
+    // failing) or found the reporter inactive does not.
+    if (completed) writeHeartbeat();
   } catch (err) {
-    const msg = (err as Error).message;
+    const msg = stripUrls(String((err as Error).message));
     console.error("[reporter] cycle error:", msg);
     // Back off on any cycle error by default - only the explicit allowlist
     // above skips it. The old allowlist-to-back-off (Timeout/fetch failed/
@@ -601,7 +618,10 @@ function tick(): void {
 }
 
 async function shutdown(signal: string): Promise<void> {
-  if (stopping) return;
+  if (stopping) {
+    console.log(`[reporter] ${signal} received again - already shutting down, still waiting for the current cycle`);
+    return;
+  }
   stopping = true;
   clearInterval(timer);
   console.log(`[reporter] ${signal} received - waiting up to ${SHUTDOWN_DRAIN_MS / 1000}s for the current cycle`);
@@ -623,8 +643,11 @@ export async function startReporterLoop(): Promise<void> {
   // is answerable from the first log lines instead of guessed at.
   console.log(`[reporter] staleness: ${describeStalenessBound(await refreshStalenessBound())}`);
 
+  // `on`, not `once`: a second signal during the drain must reach shutdown()
+  // (which ignores it) instead of Node's default handler, which would kill the
+  // process with a transaction in flight.
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
-    process.once(signal, () => void shutdown(signal));
+    process.on(signal, () => void shutdown(signal));
   }
 
   tick();
@@ -634,7 +657,7 @@ export async function startReporterLoop(): Promise<void> {
 const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   startReporterLoop().catch((err) => {
-    console.error("[reporter] startup failed:", (err as Error).message);
+    console.error("[reporter] startup failed:", stripUrls(String((err as Error).message)));
     process.exit(1);
   });
 }

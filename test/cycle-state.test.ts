@@ -26,6 +26,34 @@ describe("forEachIsolated", () => {
     expect(errors).toEqual([1]);
   });
 
+  test("stops before the next item once shouldStop is true, finishing the current one", async () => {
+    const seen: number[] = [];
+    let stop = false;
+    await forEachIsolated(
+      [1, 2, 3],
+      async (n) => {
+        seen.push(n);
+        stop = true; // e.g. SIGTERM arrived while item 1 was in flight
+      },
+      () => {},
+      () => stop,
+    );
+    expect(seen).toEqual([1]);
+  });
+
+  test("does not rethrow when stopped early after a failure", async () => {
+    let stop = false;
+    await forEachIsolated(
+      [1, 2],
+      async () => {
+        stop = true;
+        throw new Error("boom");
+      },
+      () => {},
+      () => stop,
+    );
+  });
+
   test("rethrows the first error when every market failed", async () => {
     await expect(
       forEachIsolated(
@@ -78,6 +106,20 @@ describe("terminal questions", () => {
     expect(terminalRevertName("SourceDateTooOld", "ReportingWindowClosed")).toBeUndefined();
     expect(terminalRevertName(undefined, "execution reverted: Reporting window closed")).toBe("Reporting window closed");
     expect(terminalRevertName(undefined, "Already reported")).toBeUndefined();
+  });
+
+  test("resolved, settled, finalized, cancelled and failed-quorum questions are terminal", () => {
+    // Each of these flags is only ever set to true in contracts/src/oracle, so
+    // the question can never take a report again.
+    for (const name of [
+      "AlreadyResolved",
+      "AlreadySettled",
+      "AlreadyFinalized",
+      "AlreadyCancelled",
+      "QuorumNotMetReportingFailed",
+    ]) {
+      expect(terminalRevertName(name, "")).toBe(name);
+    }
   });
 });
 
