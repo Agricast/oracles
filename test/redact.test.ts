@@ -130,3 +130,82 @@ describe("raw query values", () => {
     expect(stripUrls("apikey abcd+efgh1234 rejected")).not.toContain("efgh1234");
   });
 });
+
+describe("cross-form query values", () => {
+  // Fake value; every spelling a logger could produce for it.
+  const spellings = ["ab+cd1234", "ab cd1234", "ab%2Bcd1234", "ab%2bcd1234", "ab%20cd1234", "ab%20cd1234".toLowerCase()];
+  const urls = [
+    "https://rpc.example.com/v2?key=ab+cd1234",
+    "https://rpc.example.com/v2?key=ab%2Bcd1234",
+    "https://rpc.example.com/v2?key=ab%2bcd1234",
+    "https://rpc.example.com/v2?key=ab%20cd1234",
+  ];
+
+  for (const url of urls) {
+    test(`every spelling is scrubbed after registering ${url}`, () => {
+      registerSecretUrl(url);
+      for (const s of spellings) {
+        for (const text of [s, `x ${s} y`, `key=${s}`]) {
+          expect(stripUrls(text)).not.toContain("cd1234");
+        }
+      }
+    });
+  }
+
+  test("the 4-char minimum and host guard still hold", () => {
+    registerSecretUrl("https://rpc.example.com/v2?key=a+b");
+    expect(stripUrls("a b a+b https://rpc.example.com")).toBe("a b a+b https://rpc.example.com");
+  });
+});
+
+describe("stray closing bracket", () => {
+  test("a closer whose opener was inside the removed path is dropped", () => {
+    expect(stripUrls("https://rpc.example.com/v2/<SECRETKEY123>")).toBe("https://rpc.example.com");
+    expect(stripUrls("a <https://[bad>")).not.toContain(">>");
+    expect(stripUrls("<invalid>")).toBe("<invalid>");
+  });
+
+  test("a balanced wrapper around the URL is kept", () => {
+    expect(stripUrls("<https://a.example/p>")).toBe("<https://a.example>");
+    expect(stripUrls("(see https://a.example/p)")).toBe("(see https://a.example)");
+  });
+});
+
+describe("outer closers and escape case", () => {
+  test("only closers matched by an opener inside the URL are dropped", () => {
+    registerSecretUrl("https://rpc.example.com/v2/SECRETKEY123");
+    expect(stripUrls("<https://rpc.example.com/v2/<abc>>")).toBe("<https://rpc.example.com>");
+    expect(stripUrls("(https://other.io/(a))")).toBe("(https://other.io)");
+    expect(stripUrls("[x](https://other.io/a_(b))")).toBe("[x](https://other.io)");
+    expect(stripUrls('{"u":"https://other.io/a{b}"}')).toBe('{"u":"https://other.io"}');
+  });
+
+  test("escapes match whatever the hex case", () => {
+    registerSecretUrl("https://rpc.example.com/v2?key=ab%2fcd%2Bef");
+    for (const s of ["ab%2Fcd%2bef", "ab%2fcd%2Bef", "ab%2Fcd%2Bef", "ab%2fcd%2bef"]) {
+      expect(stripUrls(`x ${s} y`)).not.toContain("cd");
+    }
+  });
+
+  test("encodeURI and URLSearchParams spellings are scrubbed", () => {
+    const value = "k3y(x)!'~*1";
+    registerSecretUrl(`https://rpc.example.com/v2?key=${encodeURIComponent(value)}`);
+    for (const s of [value, encodeURI(value), new URLSearchParams({ k: value }).toString().slice(2)]) {
+      expect(stripUrls(`x ${s} y`)).not.toContain("k3y");
+    }
+  });
+});
+
+describe("per-secret escape matching and decoded length floor", () => {
+  test("text that matches no secret is returned byte-identical", () => {
+    registerSecretUrl("https://rpc.x.com/v2/SECRETKEY123?key=abcd");
+    const text = "100%dead beef, grew 5%because, %2fpath";
+    expect(stripUrls(text)).toBe(text);
+  });
+
+  test("the 4-char floor applies to the decoded value", () => {
+    registerSecretUrl("https://rpc.x.com/v2?k=a+b");
+    const text = "a b a+b a%20b a%2Bb";
+    expect(stripUrls(text)).toBe(text);
+  });
+});

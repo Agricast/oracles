@@ -7,12 +7,15 @@ export function redactUrl(url: string): string {
     const u = new URL(url);
     return `${u.protocol}//${u.host}`;
   } catch {
-    return "<invalid url>";
+    return INVALID_URL;
   }
 }
 
 // Literal strings to scrub from every message, longest first, each with what
 // replaces it. Filled from the configured RPC URL by registerSecretUrl().
+// A literal matches with the two characters after each "%" compared without
+// case (see replaceLiteral), and nothing else, so unrelated text ("100%dead")
+// is never touched.
 let secrets: Array<[string, string]> = [];
 // Path segments and the username are often generic ("/rpc", "v2", "user") and
 // would shred hostnames and words, so only long ones count. A password or a
@@ -63,6 +66,16 @@ export function registerSecretUrl(url: string): void {
       }
     }
   }
+  // Every spelling a logger might give the same credential: "+" and " " are
+  // interchangeable in a query string, and either may be percent-encoded with
+  // upper- or lower-case hex.
+  for (const p of [...credentialParts]) {
+    for (const v of [p, p.replaceAll("+", " "), p.replaceAll(" ", "+")]) {
+      const escaped = encodeURIComponent(v);
+      const forms = [v, escaped, escaped.replaceAll("%20", "+"), encodeURI(v), new URLSearchParams({ k: v }).toString().slice(2)];
+      for (const form of forms) credentialParts.add(form);
+    }
+  }
   const host = redactUrl(url);
   // The whole URL as it appears in JSON ("https:\/\/...") and percent-encoded
   // (upper- and lower-case escapes), each replaced by the same encoding of the host.
@@ -71,14 +84,24 @@ export function registerSecretUrl(url: string): void {
     [url, host],
     [url.replaceAll("/", "\\/"), host.replaceAll("/", "\\/")],
     [encoded, encodeURIComponent(host)],
-    [encoded.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()), encodeURIComponent(host)],
   ];
   // A piece inside the scheme or host would be replaced inside the redacted
   // "https://host" stripUrls() leaves behind, breaking it (and, if run first,
   // breaking URL detection so the rest of the URL leaked).
   const keep = (p: string) => !host.includes(p) && !SCHEME_WORDS.has(p.toLowerCase());
   for (const p of pathParts) if (p.length >= MIN_PATH_PIECE && keep(p)) next.push([p, "<redacted>"]);
-  for (const p of credentialParts) if (p.length >= MIN_CREDENTIAL_PIECE && keep(p)) next.push([p, "<redacted>"]);
+  // The floor applies to the decoded value: "a%20b" is 3 characters, not 5.
+  const decodedLength = (p: string) => {
+    const plain = p.replaceAll("+", " ");
+    try {
+      return decodeURIComponent(plain).length;
+    } catch {
+      return plain.length;
+    }
+  };
+  for (const p of credentialParts) {
+    if (decodedLength(p) >= MIN_CREDENTIAL_PIECE && keep(p)) next.push([p, "<redacted>"]);
+  }
   secrets = [...secrets, ...next].sort((a, b) => b[0].length - a[0].length);
 }
 
@@ -90,13 +113,46 @@ export function resetSecretUrls(): void {
 // Characters that commonly close a URL in prose or JSON. Kept after the
 // redacted host so `"<url>",` still reads as `"<host>",`.
 const TRAILING = /["'<>)\]},;.]+$/;
+const CLOSERS: Record<string, string> = { ">": "<", ")": "(", "]": "[", "}": "{" };
+const INVALID_URL = "<invalid url>";
+const count = (text: string, ch: string) => text.split(ch).length - 1;
+
+/** Replaces every occurrence of `literal`, treating the two characters after a "%" as case-insensitive hex. */
+function replaceLiteral(text: string, literal: string, replacement: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    let j = 0;
+    let k = i;
+    while (j < literal.length && k < text.length) {
+      if (literal[j] === "%" && text[k] === "%" && j + 2 < literal.length && k + 2 < text.length) {
+        if (literal.slice(j + 1, j + 3).toLowerCase() !== text.slice(k + 1, k + 3).toLowerCase()) break;
+        j += 3;
+        k += 3;
+      } else if (literal[j] === text[k]) {
+        j++;
+        k++;
+      } else {
+        break;
+      }
+    }
+    if (j === literal.length && literal.length > 0) {
+      out += replacement;
+      i = k;
+    } else {
+      out += text[i];
+      i++;
+    }
+  }
+  return out;
+}
 
 /** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
 export function scrubSecrets(message: string, onlyWithWhitespace = false): string {
   let out = message;
-  for (const [secret, replacement] of secrets) {
-    if (onlyWithWhitespace && !/\s/.test(secret)) continue;
-    out = out.split(secret).join(replacement);
+  for (const [literal, replacement] of secrets) {
+    if (onlyWithWhitespace && !/\s/.test(literal)) continue;
+    out = replaceLiteral(out, literal, replacement);
   }
   return out;
 }
@@ -114,9 +170,21 @@ export function stripUrls(message: string): string {
   // whitespace-delimited URL match, so they go first.
   const urlsRedacted = scrubSecrets(message, true).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
     const tail = token.match(TRAILING)?.[0] ?? "";
-    const host = redactUrl(token.slice(0, token.length - tail.length));
-    // Keep the closing punctuation only when it holds nothing but punctuation.
-    return host + tail;
+    const body = token.slice(0, token.length - tail.length);
+    const host = redactUrl(body);
+    // A closer whose opener sat inside the removed path ("/v2/<KEY>") has
+    // nothing to close any more, and after "<invalid url>" a ">" is noise.
+    let kept = "";
+    const dropped: Record<string, number> = {};
+    for (const ch of tail) {
+      const opener = CLOSERS[ch];
+      if (opener && (host === INVALID_URL ? ch === ">" : count(body, opener) > (dropped[ch] ?? 0) + count(body, ch))) {
+        dropped[ch] = (dropped[ch] ?? 0) + 1;
+        continue;
+      }
+      kept += ch;
+    }
+    return host + kept;
   });
   return scrubSecrets(urlsRedacted);
 }
