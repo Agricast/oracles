@@ -11,6 +11,7 @@ export const ctl: any = {
   pendingNonce: 0,
   latestNonce: 0,
   failMarkets: false,
+  reportedIds: [] as string[],
   priceDelay: 0,
   blockDelay: 0,
   receiptResolvers: [] as Array<() => void>,
@@ -47,14 +48,14 @@ export const clients: any = {
     getBalance: async () => 10n ** 21n,
     getTransactionCount: async ({ blockTag }: { blockTag: string }) =>
       blockTag === "pending" ? ctl.pendingNonce : ctl.latestNonce,
-    readContract: async ({ functionName }: { functionName: string }) => {
+    readContract: async ({ functionName, args }: { functionName: string; args?: unknown[] }) => {
       if (functionName === "getReporterInfo") return [ctl.registered, 10n, 0n, 0n, 0n];
       if (functionName === "ACTIVE_THRESHOLD") return 1n;
       if (functionName === "MIN_STAKE") return 1n;
       if (functionName === "REGISTRATION_FEE") return 1n;
       if (functionName === "getQuestionReporters") {
         if (ctl.failMarkets) throw new Error("market read failed");
-        return [];
+        return ctl.reportedIds.includes(args?.[0]) ? ["0x00000000000000000000000000000000000000aa"] : [];
       }
       return 0n;
     },

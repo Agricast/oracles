@@ -97,3 +97,26 @@ describe("stripUrls", () => {
     expect(stripUrls("URL: https://rpc1.example.com/zz/k3y7x")).toBe("URL: https://rpc1.example.com");
   });
 });
+
+describe("secrets containing whitespace once decoded", () => {
+  test("%20 in the query value", () => {
+    registerSecretUrl("https://rpc.example.com/rpc?apikey=abcd%20efgh1234");
+    const out = stripUrls("URL: https://rpc.example.com/rpc?apikey=abcd efgh1234 failed");
+    expect(out).not.toContain("efgh1234");
+    expect(out).not.toContain("abcd");
+  });
+
+  test("+ in the query value", () => {
+    registerSecretUrl("https://rpc.example.com/rpc?apikey=abcd+efgh1234");
+    const out = stripUrls("URL: https://rpc.example.com/rpc?apikey=abcd efgh1234 failed");
+    expect(out).not.toContain("efgh1234");
+    expect(out).not.toContain("abcd");
+  });
+
+  test("%20 in the password", () => {
+    registerSecretUrl("https://user:pass%20word99@rpc.example.com/");
+    const out = stripUrls("fetch https://user:pass word99@rpc.example.com/ failed");
+    expect(out).not.toContain("word99");
+    expect(out).not.toContain("pass ");
+  });
+});

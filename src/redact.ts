@@ -81,9 +81,12 @@ export function resetSecretUrls(): void {
 const TRAILING = /["'<>)\]},;.]+$/;
 
 /** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
-export function scrubSecrets(message: string): string {
+export function scrubSecrets(message: string, onlyWithWhitespace = false): string {
   let out = message;
-  for (const [secret, replacement] of secrets) out = out.split(secret).join(replacement);
+  for (const [secret, replacement] of secrets) {
+    if (onlyWithWhitespace && !/\s/.test(secret)) continue;
+    out = out.split(secret).join(replacement);
+  }
   return out;
 }
 
@@ -96,7 +99,9 @@ export function scrubSecrets(message: string): string {
 export function stripUrls(message: string): string {
   // URLs first: scrubbing pieces first could turn a URL into text the pattern
   // no longer recognises, and whatever path was left then leaked.
-  const urlsRedacted = message.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
+  // Pieces that contain whitespace (a decoded %20 or +) would be cut by the
+  // whitespace-delimited URL match, so they go first.
+  const urlsRedacted = scrubSecrets(message, true).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
     const tail = token.match(TRAILING)?.[0] ?? "";
     const host = redactUrl(token.slice(0, token.length - tail.length));
     // Keep the closing punctuation only when it holds nothing but punctuation.

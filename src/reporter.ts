@@ -362,12 +362,12 @@ async function submitReportForMarket(
   market: ReportableMarket,
   bound: StalenessBound,
   getPrice: (productCode: string) => Promise<ScaledPrice>,
-): Promise<"pending-tx" | void> {
+): Promise<"pending-tx" | "not-needed" | void> {
   const { publicClient, walletClient, account, config } = clients;
   const address = config.oracleAddress;
 
-  if (isTerminal(market.questionId)) return;
-  if (await hasAlreadyReported(clients, market.questionId)) return;
+  if (isTerminal(market.questionId)) return "not-needed";
+  if (await hasAlreadyReported(clients, market.questionId)) return "not-needed";
   // getQuestionReporters only sees mined reports. After a kill + restart the
   // last submitReport can still be in the mempool, and sending another would
   // put up a second bond for the same question.
@@ -575,13 +575,17 @@ async function runCycle(): Promise<void> {
       const markets = await discoverReportableMarkets();
       // Same bound and one price lookup per product for the whole cycle.
       const getPrice = createPriceCache((productCode) => fetchScaledPrice(productCode, bound));
-      let attempted = 0;
+      // Markets that actually needed a report this cycle. Terminal and
+      // already-reported ones do not count, or one of them would hide a stuck tx.
+      let needed = 0;
       let skippedForPending = 0;
       await forEachIsolated(
         markets,
         async (market) => {
-          attempted++;
-          if ((await submitReportForMarket(clients, market, bound, getPrice)) === "pending-tx") skippedForPending++;
+          const result = await submitReportForMarket(clients, market, bound, getPrice);
+          if (result === "not-needed") return;
+          needed++;
+          if (result === "pending-tx") skippedForPending++;
         },
         (market, err) =>
           console.error(
@@ -595,7 +599,7 @@ async function runCycle(): Promise<void> {
       // A tx stuck in the mempool (e.g. underpriced) blocks every market every
       // cycle. Nothing is reported, so do not look healthy. No automatic
       // replacement tx: picking a fee and racing the original is for an operator.
-      if (attempted > 0 && skippedForPending === attempted) {
+      if (needed > 0 && skippedForPending === needed) {
         const nonce = await clients.publicClient.getTransactionCount({
           address: clients.account.address,
           blockTag: "latest",
