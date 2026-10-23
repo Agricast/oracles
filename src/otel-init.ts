@@ -18,6 +18,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources";
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { UndiciInstrumentation } from "@opentelemetry/instrumentation-undici";
 import { serviceVersion, serviceInstanceId } from "./release.js";
+import { scrubSecrets, stripUrls } from "./redact.js";
 
 /**
  * Opt-in OTLP traces + logs + metrics for this standalone reporter, against
@@ -115,11 +116,16 @@ export async function traceSpan<T>(
       span.setStatus({ code: SpanStatusCode.OK });
       return result;
     } catch (e) {
-      span.recordException(e as Error);
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: e instanceof Error ? e.message : String(e),
+      // Spans leave the process, and viem errors carry "URL: <rpc url>" with
+      // the provider key in it. Record a scrubbed copy; the caller still gets
+      // the original error.
+      const message = stripUrls(e instanceof Error ? e.message : String(e));
+      span.recordException({
+        name: e instanceof Error ? e.name : "Error",
+        message,
+        stack: e instanceof Error && e.stack ? stripUrls(e.stack) : undefined,
       });
+      span.setStatus({ code: SpanStatusCode.ERROR, message });
       throw e;
     } finally {
       span.end();
@@ -175,7 +181,8 @@ function patchConsole(): void {
       otelLogger?.emit({
         severityNumber: number,
         severityText: text,
-        body: args.map((a) => (typeof a === "string" ? a : String(a))).join(" "),
+        // Call sites already strip URLs; this catches an Error passed straight in.
+        body: stripUrls(args.map((a) => (typeof a === "string" ? a : String(a))).join(" ")),
         // Pass the active context explicitly - the SDK only attaches
         // trace/span ids to a log record when a context is given, it does
         // not fall back to context.active() on its own.
@@ -183,6 +190,27 @@ function patchConsole(): void {
       });
     };
   }
+}
+
+/**
+ * undici requestHook. The instrumentation puts the full request URL on every
+ * HTTP span (url.full, url.path, url.query), and for RPC calls that URL holds
+ * the provider key. Runs after those are set, so it overwrites them with the
+ * registered secret URL's pieces scrubbed; other URLs are left as they are.
+ */
+export function redactHttpSpan(
+  span: { setAttribute: (key: string, value: string) => unknown },
+  request: { origin: string; path: string },
+): void {
+  let url: URL;
+  try {
+    url = new URL(request.path, request.origin);
+  } catch {
+    return;
+  }
+  span.setAttribute("url.full", scrubSecrets(url.toString()));
+  span.setAttribute("url.path", scrubSecrets(url.pathname));
+  span.setAttribute("url.query", scrubSecrets(url.search));
 }
 
 let providersShutdown: (() => Promise<void>) | null = null;
@@ -261,7 +289,7 @@ function initOtel(): void {
   // viem's http() transport, which also runs on Node's built-in fetch/undici
   // - one instrumentation gets both the price/markets API calls and the RPC
   // calls into SigNoz as child spans of whatever span is active.
-  registerInstrumentations({ instrumentations: [new UndiciInstrumentation()] });
+  registerInstrumentations({ instrumentations: [new UndiciInstrumentation({ requestHook: redactHttpSpan })] });
 
   patchConsole();
 

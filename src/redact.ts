@@ -55,6 +55,13 @@ export function resetSecretUrls(): void {
 // redacted host so `"<url>",` still reads as `"<host>",`.
 const TRAILING = /["'<>)\]},;.]+$/;
 
+/** Replaces only the literal pieces of registered secret URLs; other URLs stay readable. */
+export function scrubSecrets(message: string): string {
+  let out = message;
+  for (const [secret, replacement] of secrets) out = out.split(secret).join(replacement);
+  return out;
+}
+
 /**
  * Redacts every URL in `message` (viem errors include "URL: ...") down to its
  * host, matching to the end of the whitespace-delimited token so a quote or
@@ -62,13 +69,10 @@ const TRAILING = /["'<>)\]},;.]+$/;
  * piece of a registered secret URL.
  */
 export function stripUrls(message: string): string {
-  let out = message;
-  for (const [secret, replacement] of secrets) out = out.split(secret).join(replacement);
-  out = out.replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
+  return scrubSecrets(message).replace(/\b[a-z][a-z0-9+.-]*:\/\/\S+/gi, (token) => {
     const tail = token.match(TRAILING)?.[0] ?? "";
     const host = redactUrl(token.slice(0, token.length - tail.length));
     // Keep the closing punctuation only when it holds nothing but punctuation.
     return host + tail;
   });
-  return out;
 }
