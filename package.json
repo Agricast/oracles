@@ -29,7 +29,7 @@
     "@opentelemetry/sdk-logs": "^0.220.0",
     "@opentelemetry/sdk-metrics": "^2.12.1",
     "@opentelemetry/sdk-trace-node": "^2.12.1",
-    "dotenv": "^18.0.10",
+    "dotenv": "^16.4.5",
     "playwright": "^1.65.0",
     "viem": "^2.57.19"
   },
